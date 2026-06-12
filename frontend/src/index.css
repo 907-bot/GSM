@@ -1,0 +1,92 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-slate-900 text-slate-100 antialiased;
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-white/5 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl;
+  }
+  
+  .gradient-text {
+    @apply bg-gradient-to-r from-blue-400 via-purple-400 to-emerald-400 bg-clip-text text-transparent;
+  }
+  
+  .scientific-gradient {
+    @apply bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900;
+  }
+  
+  .glow-effect {
+    @apply relative;
+  }
+  
+  .glow-effect::before {
+    content: '';
+    @apply absolute -inset-0.5 bg-gradient-to-r from-blue-500 via-purple-500 to-emerald-500 rounded-xl blur opacity-30 group-hover:opacity-50 transition duration-300;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-slate-800/50;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-slate-600/50 rounded-full hover:bg-slate-500/50;
+}
+
+/* Graph container */
+.graph-container {
+  @apply w-full h-[600px] rounded-xl overflow-hidden;
+}
+
+/* Animations */
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin-slow {
+  animation: spin-slow 20s linear infinite;
+}
+
+/* Graph node pop animation for new nodes */
+@keyframes node-pop {
+  0% { r: 0; opacity: 0; }
+  50% { opacity: 1; }
+  100% { r: var(--node-r, 6); opacity: 0.7; }
+}
+
+.animate-node-pop {
+  animation: node-pop 0.6s ease-out forwards;
+}
+
+/* Glow edge animation for new relationships */
+@keyframes glow-edge {
+  0%, 100% { opacity: 0.2; }
+  50% { opacity: 0.8; }
+}
+
+.animate-glow-edge {
+  animation: glow-edge 2s ease-in-out infinite;
+}
+
+/* Force graph SVG */
+.force-graph-svg {
+  background: transparent;
+}
+
+.force-graph-svg text {
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  user-select: none;
+}

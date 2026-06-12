@@ -1,0 +1,110 @@
+[project]
+name = "gsm-os"
+version = "0.1.0"
+description = "Global Scientific Memory OS - Continuous Scientific Discovery and Bottleneck Detection Platform"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "GSM-OS Team"}
+]
+
+dependencies = [
+    # Core
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "gunicorn>=21.2.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+
+    # Security
+    "pyjwt>=2.8.0",
+    "bcrypt>=4.1.0",
+
+    # LLM & AI (Free Providers)
+    "groq>=0.9.0",
+    "langchain>=0.1.0",
+    "langchain-groq>=0.1.0",
+    "langchain-community>=0.0.20",
+    "langchain-core>=0.1.0",
+    "langgraph>=0.0.20",
+    "ollama>=0.2.0",
+
+    # Vector Database
+    "qdrant-client>=1.7.0,<1.9.0",
+
+    # Relational Database
+    "asyncpg>=0.29.0",
+    "alembic>=1.13.0",
+
+    # Graph Database
+    "neo4j>=5.17.0",
+
+    # Data Processing
+    "numpy>=1.26.0",
+
+    # APIs & HTTP
+    "httpx>=0.26.0",
+    "aiohttp>=3.9.0",
+    "feedparser>=6.0.0",
+
+    # Task Queue
+    "celery>=5.3.0",
+    "redis>=5.0.0",
+
+    # Monitoring
+    "prometheus-client>=0.19.0",
+
+    # Utilities
+    "python-dotenv>=1.0.0",
+    "structlog>=24.1.0",
+    "rich>=13.7.0",
+    "typer>=0.9.0",
+    "pyyaml>=6.0.0",
+    "orjson>=3.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.2.0",
+    "mypy>=1.8.0",
+    "pre-commit>=3.6.0",
+]
+ml = [
+    "torch>=2.1.0",
+    "torch-geometric>=2.4.0",
+    "dgl>=2.0.0",
+    "scispacy>=0.5.3",
+]
+spacy = ["scispacy>=0.5.3"]
+all = [
+    "gsm-os[dev,ml,spacy]",
+]
+
+[project.scripts]
+gsm = "src.cli:app"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

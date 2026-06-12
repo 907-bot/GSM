@@ -1,0 +1,42 @@
+groups:
+  - name: gsm-os-alerts
+    rules:
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High HTTP error rate detected"
+      
+      - alert: MemoryUsageHigh
+        expr: qdrant_memory_usage_bytes / qdrant_memory_limit_bytes > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Qdrant memory usage above 80%"
+      
+      - alert: Neo4jDown
+        expr: neo4j_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Neo4j is down"
+      
+      - alert: QueueBacklog
+        expr: celery_queue_length > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Task queue backlog exceeds 1000 tasks"
+      
+      - alert: LowThroughput
+        expr: rate(tasks_processed_total[1h]) < 10
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Task processing throughput dropped below 10/hour"

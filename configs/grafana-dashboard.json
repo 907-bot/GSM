@@ -1,0 +1,74 @@
+{
+  "apiVersion": 1,
+  "panels": [
+    {
+      "title": "System Overview",
+      "type": "row",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}
+    },
+    {
+      "title": "Memory Usage",
+      "type": "gauge",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 1},
+      "targets": [
+        {"expr": "process_memory_bytes / process_memory_limit_bytes * 100"}
+      ]
+    },
+    {
+      "title": "Task Queue Length",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 1},
+      "targets": [
+        {"expr": "celery_queue_length"}
+      ]
+    },
+    {
+      "title": "Request Rate",
+      "type": "graph",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 1},
+      "targets": [
+        {"expr": "rate(http_requests_total[5m])"}
+      ]
+    },
+    {
+      "title": "Papers Processed",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 9},
+      "targets": [
+        {"expr": "papers_processed_total"}
+      ]
+    },
+    {
+      "title": "Graph Size",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 9},
+      "targets": [
+        {"expr": "neo4j_node_count"}
+      ]
+    },
+    {
+      "title": "Hypotheses Generated",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 9},
+      "targets": [
+        {"expr": "hypotheses_generated_total"}
+      ]
+    },
+    {
+      "title": "Contradictions Detected",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 9},
+      "targets": [
+        {"expr": "contradictions_detected_total"}
+      ]
+    },
+    {
+      "title": "Research Activity",
+      "type": "heatmap",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 13},
+      "targets": [
+        {"expr": "rate(papers_fetched_total[1h])"}
+      ]
+    }
+  ]
+}

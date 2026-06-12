@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Seed the system with sample scientific papers for testing."""
+import asyncio
+import sys
+sys.path.insert(0, '.')
+
+from src.agents.research_agent import BaseResearchAgent
+
+SAMPLE_PAPERS = [
+    {
+        "title": "Graph Neural Networks for Molecular Property Prediction",
+        "abstract": "We present a novel graph neural network architecture that achieves state-of-the-art results on multiple molecular property prediction benchmarks. Our model leverages attention mechanisms and message passing to capture complex molecular interactions.",
+        "authors": ["Zhang, L.", "Wang, H.", "Liu, Y."],
+        "source": "arxiv",
+        "source_id": "2401.12345",
+        "categories": ["cs.LG", "q-bio.BM"],
+        "published_at": "2024-01-15",
+    },
+    {
+        "title": "CRISPR-Cas9 Mediated Gene Editing in Human Stem Cells",
+        "abstract": "We demonstrate efficient CRISPR-Cas9 mediated gene editing in human induced pluripotent stem cells with minimal off-target effects. This approach enables precise correction of disease-associated mutations.",
+        "authors": ["Kim, S.", "Park, J.", "Lee, M."],
+        "source": "pubmed",
+        "source_id": "38345678",
+        "categories": ["Biotechnology", "Genetics"],
+        "published_at": "2024-01-20",
+    },
+    {
+        "title": "Neuromorphic Computing with Spiking Neural Networks",
+        "abstract": "Spiking neural networks offer a biologically plausible approach to neuromorphic computing. We demonstrate efficient implementations on specialized hardware achieving ultra-low power consumption.",
+        "authors": ["Mead, C.", "Indiveri, G."],
+        "source": "arxiv",
+        "source_id": "2401.67890",
+        "categories": ["cs.ET", "cs.NE"],
+        "published_at": "2024-01-25",
+    },
+    {
+        "title": "Deep Learning for Drug Discovery and Development",
+        "abstract": "Recent advances in deep learning are transforming drug discovery pipelines, from target identification to clinical trial optimization. We review key developments and identify future directions.",
+        "authors": ["Chen, H.", "Engkvist, O."],
+        "source": "semantic_scholar",
+        "source_id": "ss123456",
+        "categories": ["Drug Discovery", "AI"],
+        "published_at": "2024-02-01",
+    },
+    {
+        "title": "Room Temperature Superconductivity in Hydride Compounds",
+        "abstract": "We report evidence of room-temperature superconductivity in a carbonaceous sulfur hydride compound at high pressure, marking a major milestone in the field.",
+        "authors": ["Dias, R.", "Hirsch, J."],
+        "source": "arxiv",
+        "source_id": "2402.12345",
+        "categories": ["cond-mat.supr-con", "physics.app-ph"],
+        "published_at": "2024-02-10",
+    },
+]
+
+
+async def main():
+    agent = BaseResearchAgent(domain="general", keywords=["test"])
+    results = []
+    
+    print(f"Seeding {len(SAMPLE_PAPERS)} papers...")
+    for paper_data in SAMPLE_PAPERS:
+        paper = await agent.process_paper(paper_data)
+        if paper:
+            results.append(str(paper.id))
+            print(f"  + {paper.title[:50]}... -> {paper.id}")
+        else:
+            print(f"  - {paper_data['title'][:50]}... FAILED")
+    
+    print(f"\nSeeded {len(results)} papers")
+    return results
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
