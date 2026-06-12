@@ -40,6 +40,9 @@ dependencies = [
     # Graph Database
     "neo4j>=5.17.0",
 
+    # Embeddings
+    "sentence-transformers>=2.2.0",
+
     # Data Processing
     "numpy>=1.26.0",
 

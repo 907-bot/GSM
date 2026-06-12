@@ -18,8 +18,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY pyproject.toml .
 
-# Do NOT install torch/sentence-transformers in builder
-# Embeddings use ONNX runtime (optimum) which is much smaller
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir --prefix=/install \
       fastapi "uvicorn[standard]" \
@@ -33,7 +31,8 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
       celery[redis] \
       python-dotenv structlog rich typer pyyaml orjson \
       prometheus-client ollama \
-      pyjwt bcrypt
+      pyjwt bcrypt \
+      sentence-transformers
 
 # ── Runtime stage ────────────────────────────────────────────────────
 FROM python:3.11-slim
