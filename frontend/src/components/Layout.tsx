@@ -14,15 +14,29 @@ import {
   ChevronRight,
   Wifi,
   WifiOff,
+  MessageSquare,
+  GitCompare,
+  Columns,
+  Route,
+  Clock,
+  Sparkles,
+  LogOut,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { NotificationBell } from './NotificationBell'
 import { useEventStore } from '../store/eventStore'
 import { useWebSocket } from '../hooks/useWebSocket'
+import { useAuthStore } from '../store/authStore'
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
+  { name: 'AI Chat', href: '/chat', icon: MessageSquare },
   { name: 'Discovery Feed', href: '/discovery', icon: Compass },
+  { name: 'Missing Links', href: '/missing-links', icon: GitCompare },
+  { name: 'Novelty Score', href: '/novelty', icon: Sparkles },
+  { name: 'Paper Compare', href: '/papers/compare', icon: Columns },
+  { name: 'Roadmap Generator', href: '/roadmap', icon: Route },
+  { name: 'Discovery Timeline', href: '/timeline', icon: Clock },
   { name: 'Bottlenecks', href: '/bottlenecks', icon: AlertTriangle },
   { name: 'Hypotheses', href: '/hypotheses', icon: Lightbulb },
   { name: 'Graph Explorer', href: '/graph', icon: Network },
@@ -40,6 +54,7 @@ export function Layout({ children }: LayoutProps) {
   const location = useLocation()
   const pushEvent = useEventStore((s) => s.pushEvent)
   const setConnected = useEventStore((s) => s.setConnected)
+  const { user, logout } = useAuthStore()
 
   const { connected } = useWebSocket({
     room: 'all',
@@ -115,6 +130,46 @@ export function Layout({ children }: LayoutProps) {
             </div>
           </div>
         )}
+
+        {/* User profile */}
+        <div className="border-t border-white/10 bg-white/5 py-2">
+          {collapsed ? (
+            <div className="flex flex-col items-center gap-2 py-1">
+              <div 
+                className="h-8 w-8 rounded-full bg-gradient-to-tr from-blue-500 to-purple-500 flex items-center justify-center text-white text-xs font-semibold shadow-md"
+                title={user?.name || 'User'}
+              >
+                {user?.name ? user.name[0].toUpperCase() : '?'}
+              </div>
+              <button
+                onClick={logout}
+                className="text-slate-400 hover:text-rose-400 p-1.5 rounded transition-colors"
+                title="Log Out"
+              >
+                <LogOut className="h-4.5 w-4.5" />
+              </button>
+            </div>
+          ) : (
+            <div className="px-3 py-2 flex items-center gap-3">
+              <div className="h-9 w-9 rounded-full bg-gradient-to-tr from-blue-500 to-purple-500 flex items-center justify-center text-white font-semibold shadow-md">
+                {user?.name ? user.name[0].toUpperCase() : '?'}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-white truncate">{user?.name || 'User'}</p>
+                <span className="inline-block text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded mt-0.5">
+                  {user?.role || 'viewer'}
+                </span>
+              </div>
+              <button
+                onClick={logout}
+                className="text-slate-400 hover:text-rose-400 p-1.5 rounded transition-colors"
+                title="Log Out"
+              >
+                <LogOut className="h-4.5 w-4.5" />
+              </button>
+            </div>
+          )}
+        </div>
 
         {/* Collapse button */}
         <button

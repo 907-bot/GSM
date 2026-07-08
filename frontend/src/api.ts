@@ -8,10 +8,26 @@ class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = localStorage.getItem('gsm_access_token')
+  const headers = new Headers(init?.headers)
+  if (!headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
     ...init,
+    headers,
   })
+
+  if (res.status === 401) {
+    localStorage.removeItem('gsm_access_token')
+    localStorage.removeItem('gsm_user')
+    window.dispatchEvent(new Event('gsm_auth_unauthorized'))
+  }
+
   if (!res.ok) throw new ApiError(res.status, `API ${res.status}: ${res.statusText}`)
   return res.json()
 }

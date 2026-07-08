@@ -6,6 +6,7 @@ from typing import Optional, Dict, Any, List
 
 from .service import auth_service
 from .models import UserRole
+from ..config import settings
 
 security = HTTPBearer(auto_error=False)
 
@@ -38,6 +39,15 @@ async def get_current_user(
                     "role": api_user.role,
                     "name": api_user.name,
                 }
+
+    # Fallback to mock admin user in development mode
+    if not user and settings.ENVIRONMENT != "production":
+        user = {
+            "user_id": "dev_admin_id",
+            "email": "developer@gsm-os.local",
+            "role": UserRole.ADMIN,
+            "name": "Developer (Local)",
+        }
 
     if user:
         request.state.user = user

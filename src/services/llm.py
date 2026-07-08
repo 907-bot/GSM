@@ -36,6 +36,18 @@ OLLAMA_FREE_MODELS = [
     "deepseek-r1",     # DeepSeek R1 (reasoning)
 ]
 
+# OpenRouter free models (https://openrouter.ai — register for free API key)
+OPENROUTER_FREE_MODELS = [
+    "mistralai/mistral-7b-instruct:free",
+    "meta-llama/llama-3.1-8b-instruct:free",
+    "google/gemma-2-9b-it:free",
+    "microsoft/phi-3-mini-128k-instruct:free",
+    "qwen/qwen-2-7b-instruct:free",
+    "openchat/openchat-3.5-0106:free",
+]
+
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
 
 class LLMService:
     """
@@ -114,6 +126,8 @@ class LLMService:
             return await self._chat_ollama(messages, target_model, temperature, max_tokens)
         elif self.provider == "huggingface":
             return await self._chat_huggingface(messages, target_model, temperature, max_tokens)
+        elif self.provider == "openrouter":
+            return await self._chat_openrouter(messages, target_model, temperature, max_tokens)
         else:
             logger.warning(
                 "Unknown provider, falling back to Groq",
@@ -261,6 +275,53 @@ class LLMService:
             logger.error("HuggingFace chat failed", error=str(e))
             raise
 
+    async def _chat_openrouter(
+        self,
+        messages: List[Dict[str, str]],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        """
+        OpenRouter — free frontier models.
+        Get a free key at https://openrouter.ai
+        Free models include: mistralai/mistral-7b-instruct:free, meta-llama/llama-3.1-8b-instruct:free
+        """
+        try:
+            import httpx
+
+            api_key = getattr(settings, "OPENROUTER_API_KEY", None)
+            if not api_key:
+                logger.warning("OPENROUTER_API_KEY not set, falling back to Groq")
+                return await self._chat_groq(messages, GROQ_FREE_MODELS[0], temperature, max_tokens)
+
+            target_model = model if model in OPENROUTER_FREE_MODELS else OPENROUTER_FREE_MODELS[0]
+
+            async with httpx.AsyncClient(timeout=60.0) as http:
+                resp = await http.post(
+                    f"{OPENROUTER_BASE_URL}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "HTTP-Referer": "https://gsm-os.research",
+                        "X-Title": "GSM-OS Scientific Discovery Platform",
+                    },
+                    json={
+                        "model": target_model,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                content = data["choices"][0]["message"]["content"]
+                logger.info("OpenRouter chat completed", model=target_model)
+                return content or ""
+
+        except Exception as e:
+            logger.error("OpenRouter chat failed, falling back to Groq", error=str(e))
+            return await self._chat_groq(messages, GROQ_FREE_MODELS[0], temperature, max_tokens)
+
     # ------------------------------------------------------------------
     # Streaming (for real-time summarization)
     # ------------------------------------------------------------------
@@ -363,6 +424,7 @@ class LLMService:
         return {
             "groq": GROQ_FREE_MODELS,
             "ollama": OLLAMA_FREE_MODELS,
+            "openrouter": OPENROUTER_FREE_MODELS,
             "huggingface": [
                 "mistralai/Mistral-7B-Instruct-v0.3",
                 "meta-llama/Llama-3.1-8B-Instruct",

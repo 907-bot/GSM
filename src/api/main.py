@@ -18,14 +18,21 @@ from ..models import (
 )
 from ..agents import get_all_agents
 from ..agents.sources import HuggingFacePapersSource
+from ..agents.sources_extended import BioRxivSource, MedRxivSource, CORESource
+from ..agents.citation_agent import citation_agent
 from ..engines import (
     ReplayEngine,
     ContradictionEngine,
     BottleneckEngine,
     HypothesisGenerator,
     GraphDiscoveryEngine,
+    NoveltyEngine,
+    ScientificExtractor,
 )
+from ..engines.novelty import novelty_engine
+from ..engines.extraction import scientific_extractor
 from ..memory import EpisodicMemory, SemanticMemory
+from ..memory.graph_schema import graph_schema
 from ..services import embedding_service, llm_service
 from ..bus import event_bus
 from ..events import Event, EventType
@@ -1635,3 +1642,576 @@ async def rate_limit_middleware(request: Request, call_next):
     response.headers["X-RateLimit-Remaining"] = str(max(0, burst - 1))
     return response
 
+
+# ── Novelty Engine ────────────────────────────────────────────────────
+
+
+class NoveltyScoreRequest(BaseModel):
+    concepts: List[str] = Field(..., min_items=1, max_items=10)
+
+
+@app.post("/novelty/score")
+async def score_novelty(request: NoveltyScoreRequest):
+    """Score how novel a concept combination is (0=well-studied, 1=unexplored)."""
+    return await novelty_engine.score_novelty(request.concepts)
+
+
+@app.get("/novelty/combinations")
+async def get_unexplored_combinations(
+    min_confidence: float = 0.3,
+    max_results: int = 20,
+):
+    """
+    Find unexplored concept combinations — 'what has nobody tried yet'.
+    Returns pairs of concepts connected in the graph but with no direct paper.
+    """
+    combinations = await novelty_engine.find_unexplored_combinations(
+        min_confidence=min_confidence,
+        max_results=max_results,
+    )
+    return {"combinations": combinations, "total": len(combinations)}
+
+
+@app.get("/novelty/drug-repurposing")
+async def get_drug_repurposing_candidates(max_results: int = 15):
+    """
+    Find Drug → Protein → Disease chains where no direct Drug→Disease paper exists.
+    These are prime drug repurposing candidates.
+    """
+    candidates = await novelty_engine.find_drug_repurposing_candidates(max_results=max_results)
+    return {"candidates": candidates, "total": len(candidates)}
+
+
+@app.get("/novelty/rising-concepts")
+async def get_rising_concepts(
+    time_window_days: int = 30,
+    min_papers: int = 3,
+):
+    """Detect concepts rising in frequency over the past N days."""
+    rising = await novelty_engine.detect_rising_concepts(
+        time_window_days=time_window_days,
+        min_papers=min_papers,
+    )
+    return {"rising_concepts": rising, "total": len(rising)}
+
+
+@app.get("/novelty/three-hop-hypotheses")
+async def get_three_hop_hypotheses(max_results: int = 10):
+    """
+    Find A→B→C chains where no direct A→C paper exists.
+    These are high-potential hypothesis candidates.
+    """
+    hypotheses = await novelty_engine.find_three_hop_hypotheses(max_results=max_results)
+    return {"hypotheses": hypotheses, "total": len(hypotheses)}
+
+
+# ── Graph Schema ──────────────────────────────────────────────────────
+
+
+@app.get("/graph/schema")
+async def get_graph_schema():
+    """Get full Neo4j node/relation type counts for the knowledge graph."""
+    return await graph_schema.get_schema_summary()
+
+
+@app.post("/graph/schema/initialize")
+async def initialize_graph_schema(
+    user: Dict[str, Any] = Depends(require_role([UserRole.ADMIN])),
+):
+    """Initialize all Neo4j constraints and indexes. Safe to run multiple times."""
+    result = await graph_schema.initialize()
+    await audit_service.log(action="graph.schema_init", actor=user.get("email", "unknown"))
+    return result
+
+
+# ── Scientific Entity Extraction ──────────────────────────────────────
+
+
+class ExtractRequest(BaseModel):
+    paper_id: str
+    title: str
+    abstract: str
+    store_in_graph: bool = True
+
+
+@app.post("/extract/entities")
+async def extract_entities(
+    request: ExtractRequest,
+    user: Dict[str, Any] = Depends(require_auth),
+):
+    """Extract scientific entities (methods, datasets, diseases, drugs, etc.) from a paper."""
+    entities = await scientific_extractor.extract_from_paper(
+        paper_id=request.paper_id,
+        title=request.title,
+        abstract=request.abstract,
+        store_in_graph=request.store_in_graph,
+    )
+    await audit_service.log(
+        action="extract.entities",
+        actor=user.get("email", "unknown"),
+        resource=request.paper_id,
+    )
+    return {"paper_id": request.paper_id, "entities": entities}
+
+
+@app.get("/extract/entities/{paper_id}")
+async def get_paper_entities(paper_id: str):
+    """Get entities already stored in Neo4j for a given paper."""
+    from neo4j import GraphDatabase
+    driver = GraphDatabase.driver(
+        settings.NEO4J_URI,
+        auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD),
+    )
+    entities: Dict[str, List[str]] = {}
+    with driver.session(database=settings.NEO4J_DATABASE) as session:
+        label_map = {
+            "methods": "Method", "datasets": "Dataset",
+            "metrics": "Metric", "diseases": "Disease",
+            "drugs": "Drug", "concepts": "Concept",
+        }
+        for key, label in label_map.items():
+            result = session.run(
+                f"""
+                MATCH (p:Paper {{id: $paper_id}})-[]->(e:{label})
+                RETURN e.name AS name
+                """,
+                paper_id=paper_id,
+            )
+            entities[key] = [r["name"] for r in result if r["name"]]
+    driver.close()
+    return {"paper_id": paper_id, "entities": entities}
+
+
+# ── Citation Graph ────────────────────────────────────────────────────
+
+
+class CitationFetchRequest(BaseModel):
+    paper_id: str
+    doi: Optional[str] = None
+    semantic_scholar_id: Optional[str] = None
+    limit: int = Field(default=50, ge=1, le=200)
+    direction: str = "both"  # "references", "citations", "both"
+
+
+@app.post("/papers/{paper_id}/citations/fetch")
+async def fetch_paper_citations(
+    paper_id: str,
+    request: CitationFetchRequest,
+    user: Dict[str, Any] = Depends(require_auth),
+):
+    """Fetch and store citation graph for a paper via Semantic Scholar."""
+    result = await citation_agent.fetch_citations(
+        paper_id=paper_id,
+        doi=request.doi,
+        semantic_id=request.semantic_scholar_id,
+        limit=request.limit,
+        direction=request.direction,
+    )
+    await audit_service.log(
+        action="citations.fetch",
+        actor=user.get("email", "unknown"),
+        resource=paper_id,
+    )
+    return result
+
+
+@app.get("/papers/{paper_id}/citations")
+async def get_paper_citations(paper_id: str):
+    """Get papers that cite or are cited by this paper from Neo4j."""
+    from neo4j import GraphDatabase
+    driver = GraphDatabase.driver(
+        settings.NEO4J_URI,
+        auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD),
+    )
+    with driver.session(database=settings.NEO4J_DATABASE) as session:
+        refs = session.run(
+            "MATCH (p:Paper {id: $id})-[:CITES]->(ref:Paper) RETURN ref.title AS title, ref.id AS id LIMIT 50",
+            id=paper_id,
+        )
+        cits = session.run(
+            "MATCH (cit:Paper)-[:CITES]->(p:Paper {id: $id}) RETURN cit.title AS title, cit.id AS id LIMIT 50",
+            id=paper_id,
+        )
+        references = [{"id": r["id"], "title": r["title"]} for r in refs]
+        citations = [{"id": r["id"], "title": r["title"]} for r in cits]
+    driver.close()
+    return {
+        "paper_id": paper_id,
+        "references": references,
+        "citations": citations,
+        "reference_count": len(references),
+        "citation_count": len(citations),
+    }
+
+
+# ── Paper Draft Generation ────────────────────────────────────────────
+
+
+class DraftRequest(BaseModel):
+    hypothesis: str
+    evidence_papers: List[str] = []  # paper titles or abstracts
+    sections: List[str] = [
+        "abstract", "introduction", "related_work",
+        "methodology", "experimental_design",
+        "limitations", "future_work",
+    ]
+    field: str = "general"
+
+
+@app.post("/papers/draft")
+async def generate_paper_draft(
+    request: DraftRequest,
+    user: Dict[str, Any] = Depends(require_auth),
+):
+    """
+    Generate a full paper draft outline based on a hypothesis and evidence.
+    Streams section by section via SSE.
+    """
+    evidence_summary = "\n".join(
+        f"- {p}" for p in request.evidence_papers[:10]
+    )
+
+    async def stream_draft():
+        for section in request.sections:
+            section_prompts = {
+                "abstract": f"Write a scientific abstract (150-250 words) for a paper on: {request.hypothesis}\nEvidence papers:\n{evidence_summary}",
+                "introduction": f"Write an Introduction section for a paper on: {request.hypothesis}\nStart with the broader context, then narrow to the specific problem.",
+                "related_work": f"Write a Related Work section for: {request.hypothesis}\nReference these papers:\n{evidence_summary}",
+                "methodology": f"Propose a detailed Methodology for testing: {request.hypothesis}",
+                "experimental_design": f"Design the experiments to validate: {request.hypothesis}\nInclude controls, metrics, and expected outcomes.",
+                "limitations": f"Discuss potential Limitations of studying: {request.hypothesis}",
+                "future_work": f"Suggest Future Work directions after proving or disproving: {request.hypothesis}",
+            }
+            prompt = section_prompts.get(section, f"Write the {section} section for: {request.hypothesis}")
+            system = "You are a scientific paper writer. Write clearly, precisely, and in academic style."
+
+            yield f"data: {json.dumps({'section': section, 'status': 'generating'})}\n\n"
+            section_text = ""
+            async for token in llm_service.chat_stream(
+                [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+                temperature=0.4, max_tokens=600,
+            ):
+                section_text += token
+                yield f"data: {json.dumps({'section': section, 'token': token})}\n\n"
+            yield f"data: {json.dumps({'section': section, 'status': 'done', 'text': section_text})}\n\n"
+
+        yield "data: [DONE]\n\n"
+
+    await audit_service.log(
+        action="papers.draft",
+        actor=user.get("email", "unknown"),
+        detail={"hypothesis": request.hypothesis[:80]},
+    )
+    return StreamingResponse(stream_draft(), media_type="text/event-stream")
+
+
+# ── AI Research Chat ──────────────────────────────────────────────────
+
+
+class ChatRequest(BaseModel):
+    messages: List[Dict[str, str]]
+    use_graph_context: bool = True
+    max_context_papers: int = 5
+
+
+@app.post("/llm/chat/stream")
+async def chat_stream_endpoint(request: ChatRequest):
+    """
+    Stream an AI response grounded in the knowledge graph.
+    Automatically retrieves relevant papers from Qdrant to augment the prompt.
+    """
+    context_papers = []
+    if request.use_graph_context and request.messages:
+        last_user_msg = next(
+            (m["content"] for m in reversed(request.messages) if m["role"] == "user"),
+            "",
+        )
+        if last_user_msg:
+            try:
+                embedding = await embedding_service.embed_text(last_user_msg)
+                results = await episodic_memory.search_similar(
+                    embedding, limit=request.max_context_papers, filter_type="paper"
+                )
+                context_papers = [
+                    f"- {r.get('payload', {}).get('title', 'Untitled')} "
+                    f"({r.get('payload', {}).get('source', '')})"
+                    for r in results
+                ]
+            except Exception:
+                pass
+
+    system_prompt = (
+        "You are an AI scientist with access to a scientific knowledge graph. "
+        "Answer questions about research, hypotheses, and scientific literature. "
+        "Be precise, cite evidence where possible, and flag uncertainty."
+    )
+    if context_papers:
+        system_prompt += (
+            f"\n\nRelevant papers from the knowledge base:\n"
+            + "\n".join(context_papers)
+        )
+
+    messages = [{"role": "system", "content": system_prompt}] + request.messages
+
+    async def generate():
+        async for token in llm_service.chat_stream(messages, temperature=0.5, max_tokens=1000):
+            yield f"data: {json.dumps({'token': token})}\n\n"
+        if context_papers:
+            yield f"data: {json.dumps({'citations': context_papers})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# ── Reviewer Simulator ────────────────────────────────────────────────
+
+
+class ReviewRequest(BaseModel):
+    title: str
+    abstract: str
+    methodology: Optional[str] = None
+    field: str = "general"
+    strictness: str = "moderate"  # "lenient", "moderate", "strict"
+
+
+@app.post("/review/simulate")
+async def simulate_peer_review(
+    request: ReviewRequest,
+    user: Dict[str, Any] = Depends(require_auth),
+):
+    """Simulate peer review of a paper using an LLM reviewer agent."""
+    strictness_map = {
+        "lenient": "a supportive reviewer focused on encouragement",
+        "moderate": "a balanced reviewer who gives constructive criticism",
+        "strict": "a rigorous reviewer at a top-tier venue like NeurIPS or Nature",
+    }
+    reviewer_style = strictness_map.get(request.strictness, strictness_map["moderate"])
+
+    prompt = (
+        f"You are {reviewer_style}. Review the following paper submission.\n\n"
+        f"Title: {request.title}\n\n"
+        f"Abstract: {request.abstract}\n\n"
+        + (f"Methodology: {request.methodology}\n\n" if request.methodology else "")
+        + "Provide:\n"
+        "1. Summary (2-3 sentences)\n"
+        "2. Strengths (3-5 bullet points)\n"
+        "3. Weaknesses (3-5 bullet points)\n"
+        "4. Questions for authors (2-3 questions)\n"
+        "5. Recommendation: Accept / Major Revision / Minor Revision / Reject\n"
+        "6. Confidence score (1-5)\n\n"
+        "Be specific and constructive. Reference the abstract directly."
+    )
+
+    try:
+        review = await llm_service.generate(prompt, temperature=0.4, max_tokens=1200)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Review generation failed: {str(e)}")
+
+    await audit_service.log(
+        action="review.simulate",
+        actor=user.get("email", "unknown"),
+        detail={"title": request.title[:80], "strictness": request.strictness},
+    )
+    return {
+        "title": request.title,
+        "field": request.field,
+        "strictness": request.strictness,
+        "review": review,
+    }
+
+
+# ── Research Roadmap ──────────────────────────────────────────────────
+
+
+class RoadmapRequest(BaseModel):
+    topic: str
+    timeframe_years: int = Field(default=3, ge=1, le=10)
+    include_gaps: bool = True
+
+
+@app.post("/roadmap/generate")
+async def generate_research_roadmap(
+    request: RoadmapRequest,
+    user: Dict[str, Any] = Depends(require_auth),
+):
+    """Generate a structured research roadmap for a topic with gap analysis."""
+    # Get relevant papers and gaps from the knowledge graph
+    gap_context = ""
+    if request.include_gaps:
+        try:
+            combinations = await novelty_engine.find_unexplored_combinations(max_results=5)
+            topic_gaps = [
+                c for c in combinations
+                if request.topic.lower() in (c.get("concept_a", "") + c.get("concept_b", "")).lower()
+            ]
+            if topic_gaps:
+                gap_context = "\n\nIdentified research gaps:\n" + "\n".join(
+                    f"- {g['concept_a']} + {g['concept_b']}: {g.get('recommendation', '')}"
+                    for g in topic_gaps
+                )
+        except Exception:
+            pass
+
+    prompt = (
+        f"Create a detailed {request.timeframe_years}-year research roadmap for the topic: {request.topic}\n"
+        f"{gap_context}\n\n"
+        "Structure the roadmap as:\n"
+        "## Phase 1: Foundation (Year 1)\n"
+        "- Key milestones\n- Required resources\n- Expected outcomes\n\n"
+        "## Phase 2: Development (Year 2)\n"
+        "- Key milestones\n- Required resources\n- Expected outcomes\n\n"
+        f"## Phase 3: Maturation (Year {request.timeframe_years})\n"
+        "- Key milestones\n- Required resources\n- Expected outcomes\n\n"
+        "## Open Research Questions\n"
+        "## Recommended Collaborations\n"
+        "## Potential Impact\n\n"
+        "Be specific. Reference real techniques, datasets, and existing work where relevant."
+    )
+
+    try:
+        roadmap = await llm_service.generate(prompt, temperature=0.5, max_tokens=2000)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Roadmap generation failed: {str(e)}")
+
+    await audit_service.log(
+        action="roadmap.generate",
+        actor=user.get("email", "unknown"),
+        detail={"topic": request.topic[:80]},
+    )
+    return {
+        "topic": request.topic,
+        "timeframe_years": request.timeframe_years,
+        "roadmap": roadmap,
+        "gaps_included": request.include_gaps,
+    }
+
+
+# ── Paper Comparison ──────────────────────────────────────────────────
+
+
+@app.get("/papers/compare")
+async def compare_papers(paper_id_a: str, paper_id_b: str):
+    """Compare two papers: shared authors, concepts, similarity score, and contradictions."""
+    paper_a = await episodic_memory.get_paper(paper_id_a)
+    paper_b = await episodic_memory.get_paper(paper_id_b)
+
+    if not paper_a:
+        raise HTTPException(status_code=404, detail=f"Paper {paper_id_a} not found")
+    if not paper_b:
+        raise HTTPException(status_code=404, detail=f"Paper {paper_id_b} not found")
+
+    payload_a = paper_a.get("payload", {}) or {}
+    payload_b = paper_b.get("payload", {}) or {}
+
+    authors_a = set(payload_a.get("authors", []))
+    authors_b = set(payload_b.get("authors", []))
+    cats_a = set(payload_a.get("categories", []))
+    cats_b = set(payload_b.get("categories", []))
+
+    shared_authors = list(authors_a & authors_b)
+    shared_concepts = list(cats_a & cats_b)
+
+    # Semantic similarity
+    similarity = 0.0
+    try:
+        emb_a = await embedding_service.embed_text(
+            f"{payload_a.get('title', '')} {payload_a.get('abstract', '')}"
+        )
+        emb_b = await embedding_service.embed_text(
+            f"{payload_b.get('title', '')} {payload_b.get('abstract', '')}"
+        )
+        # Cosine similarity
+        import math
+        dot = sum(a * b for a, b in zip(emb_a, emb_b))
+        mag_a = math.sqrt(sum(x * x for x in emb_a))
+        mag_b = math.sqrt(sum(x * x for x in emb_b))
+        similarity = dot / (mag_a * mag_b) if mag_a and mag_b else 0.0
+    except Exception:
+        pass
+
+    # LLM comparison summary
+    comparison_text = ""
+    try:
+        prompt = (
+            f"Compare these two scientific papers:\n\n"
+            f"Paper A: {payload_a.get('title', '')}\n{payload_a.get('abstract', '')[:500]}\n\n"
+            f"Paper B: {payload_b.get('title', '')}\n{payload_b.get('abstract', '')[:500]}\n\n"
+            "In 3-4 sentences: How do they differ? Do they contradict? What does each contribute?"
+        )
+        comparison_text = await llm_service.generate(prompt, temperature=0.3, max_tokens=300)
+    except Exception:
+        pass
+
+    return {
+        "paper_a": {"id": paper_id_a, "title": payload_a.get("title"), "source": payload_a.get("source")},
+        "paper_b": {"id": paper_id_b, "title": payload_b.get("title"), "source": payload_b.get("source")},
+        "shared_authors": shared_authors,
+        "shared_concepts": shared_concepts,
+        "semantic_similarity": round(similarity, 4),
+        "similarity_verdict": (
+            "Very similar" if similarity > 0.85 else
+            "Related" if similarity > 0.6 else
+            "Different domains"
+        ),
+        "comparison_summary": comparison_text,
+    }
+
+
+# ── Extended Source Search ────────────────────────────────────────────
+
+
+class ExtendedSearchRequest(BaseModel):
+    query: str
+    sources: List[str] = ["biorxiv", "medrxiv", "core"]
+    max_results: int = Field(default=25, ge=1, le=100)
+
+
+@app.post("/search/extended")
+async def search_extended_sources(
+    request: ExtendedSearchRequest,
+    user: Dict[str, Any] = Depends(require_auth),
+):
+    """Search bioRxiv, medRxiv, and CORE Open Access sources."""
+    source_map = {
+        "biorxiv": BioRxivSource(),
+        "medrxiv": MedRxivSource(),
+        "core": CORESource(api_key=settings.CORE_API_KEY),
+    }
+    all_papers = []
+    source_counts: Dict[str, int] = {}
+
+    for src_name in request.sources:
+        source = source_map.get(src_name)
+        if not source:
+            continue
+        try:
+            papers = await source.search(request.query, max_results=request.max_results)
+            all_papers.extend(papers)
+            source_counts[src_name] = len(papers)
+        except Exception as e:
+            logger.error("Extended source search failed", source=src_name, error=str(e))
+            source_counts[src_name] = 0
+
+    await audit_service.log(
+        action="search.extended",
+        actor=user.get("email", "unknown"),
+        detail={"query": request.query, "sources": request.sources},
+    )
+    return {
+        "query": request.query,
+        "papers": all_papers,
+        "total": len(all_papers),
+        "by_source": source_counts,
+    }
+
+
+# ── Graph Schema Startup ──────────────────────────────────────────────
+
+@app.on_event("startup")
+async def _initialize_graph_schema():
+    """Initialize rich Neo4j schema on startup (idempotent)."""
+    try:
+        await graph_schema.initialize()
+        logger.info("Graph schema initialized on startup")
+    except Exception as e:
+        logger.warning("Graph schema init failed on startup (non-fatal)", error=str(e))

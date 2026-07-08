@@ -165,44 +165,120 @@ class OpenAlexSource:
 class PubMedSource:
     BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 
+    def __init__(self, api_key: Optional[str] = None):
+        # NCBI API key increases rate limit from 3 to 10 req/sec (free at https://www.ncbi.nlm.nih.gov/account/)
+        self.api_key = api_key
+
+    def _base_params(self) -> Dict[str, Any]:
+        params: Dict[str, Any] = {}
+        if self.api_key:
+            params["api_key"] = self.api_key
+        return params
+
     async def search(
         self, query: str, max_results: int = 100
     ) -> List[Dict[str, Any]]:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            search_resp = await client.get(
-                f"{self.BASE_URL}/esearch.fcgi",
-                params={"db": "pubmed", "term": query, "retmax": max_results, "retmode": "json"},
-            )
+            # Step 1: esearch — get PMIDs
+            search_params = {**self._base_params(), "db": "pubmed", "term": query,
+                             "retmax": max_results, "retmode": "json"}
+            search_resp = await client.get(f"{self.BASE_URL}/esearch.fcgi", params=search_params)
             search_resp.raise_for_status()
             ids = search_resp.json().get("esearchresult", {}).get("idlist", [])
             if not ids:
                 return []
 
-            detail_resp = await client.get(
-                f"{self.BASE_URL}/esummary.fcgi",
-                params={"db": "pubmed", "id": ",".join(ids), "retmode": "json"},
-            )
-            detail_resp.raise_for_status()
+            # Step 2: efetch — get full records INCLUDING abstracts (XML mode)
+            fetch_params = {**self._base_params(), "db": "pubmed",
+                            "id": ",".join(ids), "retmode": "xml", "rettype": "abstract"}
+            fetch_resp = await client.get(f"{self.BASE_URL}/efetch.fcgi", params=fetch_params)
+            fetch_resp.raise_for_status()
+            return self._parse_xml(fetch_resp.text)
 
-        data = detail_resp.json().get("result", {})
-        return self._parse_papers(data)
+    def _parse_xml(self, xml_content: str) -> List[Dict[str, Any]]:
+        """Parse PubMed efetch XML response to extract title, abstract, authors, DOI."""
+        import xml.etree.ElementTree as ET
+        try:
+            root = ET.fromstring(xml_content)
+        except ET.ParseError:
+            return []
 
-    def _parse_papers(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        parsed = []
-        for uid, paper in data.items():
-            if uid == "uids":
+        papers = []
+        for article in root.findall(".//PubmedArticle"):
+            medline = article.find("MedlineCitation")
+            if medline is None:
                 continue
-            parsed.append({
-                "title": paper.get("title", ""),
-                "abstract": "",
-                "authors": [a.get("name", "") for a in paper.get("authors", [])],
+            art = medline.find("Article")
+            if art is None:
+                continue
+
+            # Title
+            title_el = art.find("ArticleTitle")
+            title = "".join(title_el.itertext()) if title_el is not None else ""
+
+            # Abstract (may have multiple sections)
+            abstract_parts = []
+            abs_el = art.find("Abstract")
+            if abs_el is not None:
+                for text_el in abs_el.findall("AbstractText"):
+                    label = text_el.get("Label", "")
+                    text = "".join(text_el.itertext())
+                    if label:
+                        abstract_parts.append(f"{label}: {text}")
+                    else:
+                        abstract_parts.append(text)
+            abstract = " ".join(abstract_parts)
+
+            # Authors
+            authors = []
+            author_list = art.find("AuthorList")
+            if author_list is not None:
+                for author in author_list.findall("Author"):
+                    last = author.findtext("LastName", "")
+                    first = author.findtext("ForeName", "")
+                    name = f"{first} {last}".strip()
+                    if name:
+                        authors.append(name)
+
+            # PMID
+            pmid_el = medline.find("PMID")
+            pmid = pmid_el.text if pmid_el is not None else ""
+
+            # DOI
+            doi = ""
+            article_ids = article.find(".//ArticleIdList")
+            if article_ids is not None:
+                for aid in article_ids.findall("ArticleId"):
+                    if aid.get("IdType") == "doi":
+                        doi = aid.text or ""
+                        break
+
+            # Publication date
+            pub_date_el = medline.find(".//PubDate")
+            pub_date = ""
+            if pub_date_el is not None:
+                year = pub_date_el.findtext("Year", "")
+                month = pub_date_el.findtext("Month", "")
+                pub_date = f"{year}-{month}" if month else year
+
+            # MeSH keywords as categories
+            categories = []
+            for heading in medline.findall(".//MeshHeading/DescriptorName"):
+                categories.append(heading.text or "")
+
+            papers.append({
+                "title": title.strip(),
+                "abstract": abstract.strip(),
+                "authors": authors,
                 "source": "pubmed",
-                "source_id": uid,
-                "doi": paper.get("elocationid", ""),
-                "published_at": paper.get("pubdate", ""),
-                "categories": [],
+                "source_id": pmid,
+                "doi": doi,
+                "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else None,
+                "published_at": pub_date,
+                "categories": categories[:10],
+                "citations_count": 0,
             })
-        return parsed
+        return papers
 
 
 class HuggingFacePapersSource:

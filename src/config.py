@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     OLLAMA_ENDPOINT: str = "http://localhost:11434"
     DEFAULT_LLM_PROVIDER: str = "groq"
     DEFAULT_LLM_MODEL: str = "llama-3.3-70b-versatile"
+    # OpenRouter: free frontier models — https://openrouter.ai
+    OPENROUTER_API_KEY: Optional[str] = None
 
     # Qdrant
     QDRANT_HOST: str = "localhost"
@@ -47,10 +49,14 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/1"
 
-    # Research Sources
+    # Research Sources (all free)
     SEMANTIC_SCHOLAR_API_KEY: Optional[str] = None
     CROSSREF_API_KEY: Optional[str] = None
     OPENALEX_API_KEY: Optional[str] = None
+    # NCBI/PubMed: free key increases rate limit 3→10 req/sec — https://www.ncbi.nlm.nih.gov/account/
+    NCBI_API_KEY: Optional[str] = None
+    # CORE Open Access: free key required — https://core.ac.uk/api-documentation
+    CORE_API_KEY: Optional[str] = None
 
     # Processing
     MAX_CONCURRENT_TASKS: int = 10

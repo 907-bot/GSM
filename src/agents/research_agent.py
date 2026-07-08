@@ -9,7 +9,10 @@ from ..services.embeddings import embedding_service
 from ..bus import event_bus
 from ..events import EventType, Event
 from ..engines.quality import QualityPipeline
+from ..engines.extraction import scientific_extractor
+from ..memory.graph_schema import graph_schema
 from .sources import ArxivSource, SemanticScholarSource, OpenAlexSource, PubMedSource, CrossRefSource
+from .sources_extended import BioRxivSource, MedRxivSource, CORESource
 
 logger = structlog.get_logger()
 
@@ -31,8 +34,11 @@ class BaseResearchAgent:
             "openalex": OpenAlexSource(
                 api_key=settings.OPENALEX_API_KEY
             ),
-            "pubmed": PubMedSource(),
+            "pubmed": PubMedSource(api_key=settings.NCBI_API_KEY),
             "crossref": CrossRefSource(),
+            "biorxiv": BioRxivSource(),
+            "medrxiv": MedRxivSource(),
+            "core": CORESource(api_key=settings.CORE_API_KEY),
         }
     
     async def search_papers(
@@ -159,7 +165,19 @@ class BaseResearchAgent:
             
             paper.embedding_id = str(result.get("id", "")) if result else str(paper.id)
             paper.status = PaperStatus.INDEXED
-            
+
+            # Store full paper in Neo4j graph with authors + categories
+            await graph_schema.upsert_paper_full(
+                paper_id=str(paper.id),
+                title=paper.title,
+                doi=paper.doi,
+                authors=paper.authors,
+                published_at=str(paper.published_at) if paper.published_at else None,
+                source=paper.source.value,
+                categories=paper.categories,
+                citations_count=paper.citations_count,
+            )
+
             # Extract and store concepts in semantic memory
             concepts = await self._extract_concepts(paper)
             if concepts:
@@ -167,6 +185,22 @@ class BaseResearchAgent:
                     str(paper.id),
                     concepts,
                 )
+
+            # Run scientific entity extraction (async, non-blocking)
+            if paper.abstract:
+                try:
+                    await scientific_extractor.extract_from_paper(
+                        paper_id=str(paper.id),
+                        title=paper.title,
+                        abstract=paper.abstract or "",
+                        store_in_graph=True,
+                    )
+                except Exception as ext_err:
+                    logger.warning(
+                        "Entity extraction failed (non-fatal)",
+                        paper_id=str(paper.id),
+                        error=str(ext_err),
+                    )
             
             await event_bus.agent_event(self.domain, EventType.PAPER_INDEXED,
                 paper_id=str(paper.id), title=paper.title[:50], concepts=concepts)

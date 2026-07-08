@@ -6,14 +6,14 @@ from httpx import AsyncClient, ASGITransport
 @pytest.fixture
 def mock_all_services():
     """Mock all external service dependencies."""
-    with patch('src.memory.episodic.QdrantClient') as mock_qdrant, \
+    with patch('src.memory.episodic.AsyncQdrantClient') as mock_qdrant, \
          patch('src.memory.semantic.GraphDatabase.driver') as mock_neo4j, \
          patch('src.services.embeddings.SentenceTransformer') as mock_st:
 
         mock_qdrant_instance = MagicMock()
         mock_qdrant_instance.get_collections.return_value = MagicMock(collections=[])
-        mock_qdrant_instance.search = MagicMock(return_value=[])
-        mock_qdrant_instance.scroll = MagicMock(return_value=([], None))
+        mock_qdrant_instance.search = AsyncMock(return_value=[])
+        mock_qdrant_instance.scroll = AsyncMock(return_value=([], None))
         mock_qdrant.return_value = mock_qdrant_instance
 
         mock_record = MagicMock()
@@ -64,7 +64,7 @@ class TestAPI:
     async def test_search_similar_empty(self, client):
         response = await client.post(
             "/search/similar",
-            params={"query": "test query", "limit": 5},
+            json={"query": "test query", "limit": 5},
         )
         assert response.status_code == 200
         data = response.json()
