@@ -48,3 +48,4 @@ coverage/
 # Type checking
 .mypy_cache/
 .ruff_cache/
+.github/workflows/
