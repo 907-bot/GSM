@@ -352,10 +352,20 @@ class HuggingFacePapersSource:
             title = paper.get("title", "")
             if not title:
                 continue
+            raw_authors = paper.get("authors", [])
+            authors = []
+            if isinstance(raw_authors, list):
+                for author in raw_authors:
+                    if isinstance(author, dict):
+                        name = author.get("name") or author.get("fullname") or author.get("id")
+                        if name:
+                            authors.append(name)
+                    elif author:
+                        authors.append(str(author))
             parsed.append({
                 "title": title,
                 "abstract": paper.get("abstract", paper.get("summary", "")),
-                "authors": paper.get("authors", []) if isinstance(paper.get("authors"), list) else [],
+                "authors": authors,
                 "source": "huggingface",
                 "source_id": paper.get("id", paper.get("paperId", "")),
                 "doi": paper.get("doi"),

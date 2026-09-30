@@ -53,7 +53,12 @@ class EmbeddingService:
     def model(self):
         if self._model is None and self._use_local:
             logger.info("Loading local embedding model", model=settings.EMBEDDING_MODEL)
-            self._model = SentenceTransformer(settings.EMBEDDING_MODEL)
+            try:
+                self._model = SentenceTransformer(settings.EMBEDDING_MODEL)
+            except Exception as e:
+                logger.warning("Local embedding model unavailable; switching to hash/remote fallback", error=str(e))
+                self._use_local = False
+                return None
         return self._model
 
     # ── Core embed methods ─────────────────────────────────────────────
@@ -61,24 +66,36 @@ class EmbeddingService:
     async def embed_text(self, text: str) -> np.ndarray:
         if self._use_local:
             loop = asyncio.get_event_loop()
-            embedding = await loop.run_in_executor(
-                None, lambda: self.model.encode(text, convert_to_numpy=True)
-            )
-            return embedding
+            try:
+                embedding = await loop.run_in_executor(
+                    None, lambda: self.model.encode(text, convert_to_numpy=True) if self.model else None
+                )
+                if embedding is not None:
+                    return embedding
+            except Exception as e:
+                logger.warning("Local embedding failed; using fallback embedding", error=str(e))
+                self._use_local = False
+            return await self._embed_remote(text)
         else:
             return await self._embed_remote(text)
 
     async def embed_texts(self, texts: List[str], batch_size: int = 32) -> List[np.ndarray]:
         if self._use_local:
             loop = asyncio.get_event_loop()
-            embeddings = await loop.run_in_executor(
-                None,
-                lambda: self.model.encode(
-                    texts, batch_size=batch_size, convert_to_numpy=True,
-                    show_progress_bar=len(texts) > 100,
-                ),
-            )
-            return embeddings.tolist()
+            try:
+                embeddings = await loop.run_in_executor(
+                    None,
+                    lambda: self.model.encode(
+                        texts, batch_size=batch_size, convert_to_numpy=True,
+                        show_progress_bar=len(texts) > 100,
+                    ) if self.model else None,
+                )
+                if embeddings is not None:
+                    return embeddings.tolist()
+            except Exception as e:
+                logger.warning("Local batch embedding failed; using fallback embeddings", error=str(e))
+                self._use_local = False
+            return [await self._embed_remote(text) for text in texts]
         else:
             results = []
             for text in texts:

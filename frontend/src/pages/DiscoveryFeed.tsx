@@ -21,7 +21,7 @@ export function DiscoveryFeed() {
       const paperItems = (latestPapers || []).map((p: any) => ({
         type: 'paper',
         title: p.title || 'Untitled paper',
-        source: 'Hugging Face',
+        source: p.source || 'Research source',
         time: p.published_at || 'recent',
         summary: (p.abstract || '').slice(0, 150),
         confidence: null,
@@ -57,7 +57,7 @@ export function DiscoveryFeed() {
         const items = morePapers.map((p: any) => ({
           type: 'paper',
           title: p.title || 'Untitled',
-          source: 'Hugging Face',
+          source: p.source || 'Research source',
           time: p.published_at || 'recent',
           summary: (p.abstract || '').slice(0, 150),
           confidence: null,
@@ -73,6 +73,11 @@ export function DiscoveryFeed() {
   }
 
   function viewDetails(paper: any) {
+    const url = paper.paper?.url || (paper.paper?.doi ? `https://doi.org/${paper.paper.doi}` : '')
+    if (url) {
+      window.open(url, '_blank', 'noopener,noreferrer')
+      return
+    }
     navigate(`/papers?paper=${encodeURIComponent(paper.paper?.id || paper.paper?.source_id || '')}`)
   }
 
@@ -84,7 +89,7 @@ export function DiscoveryFeed() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold gradient-text">Discovery Feed</h1>
-          <p className="text-slate-400 mt-1">Real papers from Hugging Face research feed</p>
+          <p className="text-slate-400 mt-1">Real papers from Hugging Face, arXiv, PubMed, and OpenAlex with source links</p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={fetchMore} disabled={fetching}
@@ -135,7 +140,7 @@ export function DiscoveryFeed() {
         </div>
       ) : filtered.length === 0 ? (
         <div className="glass-card p-8 text-center">
-          <p className="text-slate-400">No papers yet. Click "Fetch More" to load latest from Hugging Face.</p>
+          <p className="text-slate-400">No papers yet. Click "Fetch More" to load latest from public research sources.</p>
         </div>
       ) : (
         <div className="space-y-4">

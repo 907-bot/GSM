@@ -1,5 +1,5 @@
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import structlog
 from ..bus import event_bus
 from ..events import Event, EventType
@@ -94,9 +94,10 @@ class GraphDiscoveryEngine:
                 
                 # Calculate recency score
                 if temporal_data:
+                    now_utc = datetime.now(timezone.utc)
                     recent_count = sum(
                         1 for t in temporal_data
-                        if (datetime.now() - t).days <= 7
+                        if (now_utc - (t if t.tzinfo else t.replace(tzinfo=timezone.utc))).days <= 7
                     )
                     recency_score = recent_count / len(temporal_data)
                 else:

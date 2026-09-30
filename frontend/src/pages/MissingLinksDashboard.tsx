@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { api } from '../api'
 
 interface Combination {
   concept_a: string
@@ -26,6 +27,12 @@ const CONFIDENCE_COLOR = (c: number) => {
 
 function CombinationCard({ combo }: { combo: Combination }) {
   const [expanded, setExpanded] = useState(false)
+  const dragPayload = {
+    type: 'missing-link',
+    concepts: [combo.concept_a, combo.concept_b],
+    label: `${combo.concept_a} + ${combo.concept_b}`,
+    recommendation: combo.recommendation,
+  }
 
   return (
     <div style={{
@@ -36,6 +43,12 @@ function CombinationCard({ combo }: { combo: Combination }) {
       transition: 'all 0.2s',
       cursor: 'pointer',
     }}
+      draggable
+      onDragStart={e => {
+        e.dataTransfer.setData('application/x-gsm-missing-link', JSON.stringify(dragPayload))
+        e.dataTransfer.setData('text/plain', dragPayload.label)
+        e.dataTransfer.effectAllowed = 'copy'
+      }}
       onClick={() => setExpanded(!expanded)}
     >
       {/* Concept pair */}
@@ -140,7 +153,7 @@ function CombinationCard({ combo }: { combo: Combination }) {
           🧠 Generate Hypothesis
         </button>
         <span style={{ marginLeft: 'auto', fontSize: 11, color: '#475569', alignSelf: 'center' }}>
-          {expanded ? '▲ less' : '▼ more'}
+          drag to novelty score · {expanded ? '▲ less' : '▼ more'}
         </span>
       </div>
     </div>
@@ -154,36 +167,24 @@ export function MissingLinksDashboard() {
 
   const combinationsQuery = useQuery({
     queryKey: ['novelty-combinations', minConfidence, maxResults],
-    queryFn: async () => {
-      const r = await fetch(`/api/novelty/combinations?min_confidence=${minConfidence}&max_results=${maxResults}`)
-      return r.json()
-    },
+    queryFn: () => api.noveltyCombinations(minConfidence, maxResults),
     refetchInterval: 60000,
   })
 
   const missingLinksQuery = useQuery({
     queryKey: ['missing-links'],
-    queryFn: async () => {
-      const r = await fetch('/api/graph/missing-links')
-      return r.json()
-    },
+    queryFn: () => api.missingLinks(),
   })
 
   const drugQuery = useQuery({
     queryKey: ['drug-repurposing'],
-    queryFn: async () => {
-      const r = await fetch('/api/novelty/drug-repurposing')
-      return r.json()
-    },
+    queryFn: () => api.drugRepurposing(),
     enabled: activeTab === 'drug_repurposing',
   })
 
   const threeHopQuery = useQuery({
     queryKey: ['three-hop'],
-    queryFn: async () => {
-      const r = await fetch('/api/novelty/three-hop-hypotheses')
-      return r.json()
-    },
+    queryFn: () => api.threeHopHypotheses(),
     enabled: activeTab === 'three_hop',
   })
 

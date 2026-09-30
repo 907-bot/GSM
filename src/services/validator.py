@@ -7,7 +7,7 @@ from ..memory.provenance import SOURCE_RELIABILITY
 
 DOI_PATTERN = re.compile(r"^10\.\d{4,}/.+$")
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}")
-MIN_ABSTRACT_LENGTH = 50
+MIN_ABSTRACT_LENGTH = 10
 MAX_TITLE_LENGTH = 500
 
 

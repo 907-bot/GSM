@@ -53,19 +53,22 @@ class EpisodicMemory:
         """Store a paper vector in Qdrant. Metadata goes to SQLite."""
         point_id = str(paper_data["id"])
 
-        await self.client.upsert(
-            collection_name=self.collection,
-            points=[
-                PointStruct(
-                    id=point_id,
-                    vector=embedding.tolist(),
-                    payload={
-                        "type": "paper",
-                        "paper_id": point_id,
-                    },
-                )
-            ],
-        )
+        try:
+            await self.client.upsert(
+                collection_name=self.collection,
+                points=[
+                    PointStruct(
+                        id=point_id,
+                        vector=embedding.tolist(),
+                        payload={
+                            "type": "paper",
+                            "paper_id": point_id,
+                        },
+                    )
+                ],
+            )
+        except Exception as e:
+            logger.warning("Qdrant unavailable; storing paper metadata only", paper_id=point_id, error=str(e))
 
         await db.upsert_paper(
             paper_id=point_id,
@@ -90,23 +93,26 @@ class EpisodicMemory:
     async def store_finding(self, finding_data: Dict[str, Any], embedding: np.ndarray) -> str:
         """Store a finding vector in Qdrant."""
         point_id = str(finding_data["id"])
-        await self.client.upsert(
-            collection_name=self.collection,
-            points=[
-                PointStruct(
-                    id=point_id,
-                    vector=embedding.tolist(),
-                    payload={
-                        "type": "finding",
-                        "paper_id": str(finding_data.get("paper_id", "")),
-                        "finding_text": finding_data.get("finding_text", ""),
-                        "confidence": finding_data.get("confidence", 0.0),
-                        "entities": finding_data.get("entities", []),
-                        "relationships": finding_data.get("relationships", []),
-                    },
-                )
-            ],
-        )
+        try:
+            await self.client.upsert(
+                collection_name=self.collection,
+                points=[
+                    PointStruct(
+                        id=point_id,
+                        vector=embedding.tolist(),
+                        payload={
+                            "type": "finding",
+                            "paper_id": str(finding_data.get("paper_id", "")),
+                            "finding_text": finding_data.get("finding_text", ""),
+                            "confidence": finding_data.get("confidence", 0.0),
+                            "entities": finding_data.get("entities", []),
+                            "relationships": finding_data.get("relationships", []),
+                        },
+                    )
+                ],
+            )
+        except Exception as e:
+            logger.warning("Qdrant unavailable; finding vector not stored", finding_id=point_id, error=str(e))
         logger.info("Stored finding in episodic memory", finding_id=point_id)
         return point_id
 
@@ -131,12 +137,16 @@ class EpisodicMemory:
                 ]
             )
 
-        results = await self.client.search(
-            collection_name=self.collection,
-            query_vector=query_embedding.tolist(),
-            limit=limit,
-            query_filter=search_filter,
-        )
+        try:
+            results = await self.client.search(
+                collection_name=self.collection,
+                query_vector=query_embedding.tolist(),
+                limit=limit,
+                query_filter=search_filter,
+            )
+        except Exception as e:
+            logger.warning("Qdrant search unavailable; returning empty vector results", error=str(e))
+            return []
 
         return [
             {

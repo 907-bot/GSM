@@ -16,6 +16,8 @@ import { PaperComparison } from './pages/PaperComparison'
 import { ResearchRoadmap } from './pages/ResearchRoadmap'
 import { Timeline } from './pages/Timeline'
 import { NoveltyDashboard } from './pages/NoveltyDashboard'
+import { GapFinder } from './pages/GapFinder'
+import { PaperPublisher } from './pages/PaperPublisher'
 import { useAuthStore } from './store/authStore'
 import { AuthScreen } from './pages/AuthScreen'
 
@@ -53,10 +55,12 @@ function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
+      <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Layout>
           <Routes>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/gaps" element={<GapFinder />} />
+            <Route path="/publish" element={<PaperPublisher />} />
             <Route path="/discovery" element={<DiscoveryFeed />} />
             <Route path="/bottlenecks" element={<BottleneckDashboard />} />
             <Route path="/hypotheses" element={<HypothesisDashboard />} />

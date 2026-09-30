@@ -1,9 +1,16 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 
-const WS_BASE =
-  typeof window !== 'undefined'
-    ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
-    : 'ws://localhost:8000'
+const getWsBase = () => {
+  const envTarget = (import.meta as any).env?.VITE_API_TARGET
+  if (envTarget) {
+    return envTarget.replace(/^http/, 'ws')
+  }
+  if (typeof window !== 'undefined') {
+    return `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
+  }
+  return 'ws://localhost:8000'
+}
+const WS_BASE = getWsBase()
 const RECONNECT_BASE = 1000
 const RECONNECT_MAX = 30000
 const PING_INTERVAL = 25000
@@ -34,6 +41,7 @@ export function useWebSocket({ room = 'all', onEvent, enabled = true }: UseWebSo
   const enabledRef = useRef(enabled)
   const onEventRef = useRef(onEvent)
   const roomRef = useRef(room)
+  const isManualDisconnectRef = useRef(false)
   const [connected, setConnected] = useState(false)
   const bufferRef = useRef<EventPayload[]>([])
 
@@ -43,13 +51,18 @@ export function useWebSocket({ room = 'all', onEvent, enabled = true }: UseWebSo
 
   const connect = useCallback(() => {
     if (!enabledRef.current) return
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
+    if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) return
 
+    isManualDisconnectRef.current = false
     const url = `${WS_BASE}/ws/${roomRef.current}`
     const ws = new WebSocket(url)
     wsRef.current = ws
 
     ws.onopen = () => {
+      if (isManualDisconnectRef.current) {
+        ws.close()
+        return
+      }
       attemptRef.current = 0
       setConnected(true)
 
@@ -83,22 +96,34 @@ export function useWebSocket({ room = 'all', onEvent, enabled = true }: UseWebSo
       setConnected(false)
       clearInterval(pingTimerRef.current)
 
-      // Reconnect with exponential backoff
-      const delay = Math.min(RECONNECT_BASE * Math.pow(2, attemptRef.current), RECONNECT_MAX)
-      attemptRef.current += 1
-      reconnectTimerRef.current = setTimeout(connect, delay)
+      if (!isManualDisconnectRef.current && enabledRef.current) {
+        const delay = Math.min(RECONNECT_BASE * Math.pow(2, attemptRef.current), RECONNECT_MAX)
+        attemptRef.current += 1
+        reconnectTimerRef.current = setTimeout(connect, delay)
+      }
     }
 
     ws.onerror = () => {
-      ws.close()
+      // Browser triggers onclose automatically
     }
   }, [])
 
   const disconnect = useCallback(() => {
+    isManualDisconnectRef.current = true
     clearTimeout(reconnectTimerRef.current)
     clearInterval(pingTimerRef.current)
-    wsRef.current?.close()
-    wsRef.current = null
+
+    if (wsRef.current) {
+      const ws = wsRef.current
+      wsRef.current = null
+      if (ws.readyState === WebSocket.CONNECTING) {
+        ws.onopen = () => {
+          ws.close()
+        }
+      } else if (ws.readyState === WebSocket.OPEN) {
+        ws.close()
+      }
+    }
     setConnected(false)
   }, [])
 

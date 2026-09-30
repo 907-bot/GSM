@@ -1,32 +1,26 @@
 import React, { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { ExternalLink } from 'lucide-react'
+import { api } from '../api'
 
 interface RoadmapResult {
   topic: string
   timeframe_years: number
+  timeframe_weeks: number
   roadmap: string
   gaps_included: boolean
+  sources?: any[]
 }
 
 export function ResearchRoadmap() {
   const [topic, setTopic] = useState('')
-  const [timeframe, setTimeframe] = useState(3)
+  const [timeframeWeeks, setTimeframeWeeks] = useState(1)
   const [includeGaps, setIncludeGaps] = useState(true)
   const [trigger, setTrigger] = useState(false)
 
   const { data, isLoading, error, refetch } = useQuery<RoadmapResult>({
-    queryKey: ['roadmap', topic, timeframe, includeGaps],
-    queryFn: async () => {
-      const response = await fetch('/api/roadmap/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topic, timeframe_years: timeframe, include_gaps: includeGaps }),
-      })
-      if (!response.ok) {
-        throw new Error('Failed to generate roadmap. Please check API.')
-      }
-      return response.json()
-    },
+    queryKey: ['roadmap', topic, timeframeWeeks, includeGaps],
+    queryFn: () => api.generateRoadmap(topic, timeframeWeeks, includeGaps),
     enabled: trigger && !!topic,
   })
 
@@ -72,17 +66,26 @@ export function ResearchRoadmap() {
 
         <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <label style={{ fontSize: 13, color: '#94a3b8' }}>Timeframe (Years):</label>
+            <label style={{ fontSize: 13, color: '#94a3b8' }}>Timeline:</label>
             <select
-              value={timeframe}
-              onChange={e => setTimeframe(parseInt(e.target.value))}
+              value={timeframeWeeks}
+              onChange={e => setTimeframeWeeks(parseInt(e.target.value))}
               style={{
                 padding: '10px 14px', borderRadius: 8,
                 background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
-                color: '#e2e8f0', fontSize: 14, outline: 'none', width: 140
+                color: '#e2e8f0', fontSize: 14, outline: 'none', width: 180
               }}
             >
-              {[1, 2, 3, 5, 7, 10].map(y => <option key={y} value={y}>{y} {y === 1 ? 'Year' : 'Years'}</option>)}
+              {[
+                [1, '1 week'],
+                [2, '2 weeks'],
+                [4, '1 month'],
+                [12, '3 months'],
+                [26, '6 months'],
+                [52, '1 year'],
+                [156, '3 years'],
+                [260, '5 years'],
+              ].map(([weeks, label]) => <option key={weeks} value={weeks}>{label}</option>)}
             </select>
           </div>
 
@@ -126,12 +129,27 @@ export function ResearchRoadmap() {
       )}
 
       {data && (
-        <div style={{
-          background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)',
-          padding: 32, borderRadius: 20, whiteSpace: 'pre-wrap', lineHeight: 1.7,
-          color: '#e2e8f0', fontSize: 15
-        }}>
-          {data.roadmap}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div style={{
+            background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)',
+            padding: 32, borderRadius: 20, whiteSpace: 'pre-wrap', lineHeight: 1.7,
+            color: '#e2e8f0', fontSize: 15
+          }}>
+            {data.roadmap}
+          </div>
+          {!!data.sources?.length && (
+            <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)', padding: 24, borderRadius: 16 }}>
+              <h3 style={{ margin: '0 0 14px', fontSize: 15, color: '#f1f5f9' }}>Research Sources</h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {data.sources.map((source, i) => (
+                  <a key={i} href={source.url || (source.doi ? `https://doi.org/${source.doi}` : '#')} target="_blank" rel="noreferrer" style={{ display: 'flex', gap: 10, alignItems: 'center', color: '#a5b4fc', textDecoration: 'none', fontSize: 13 }}>
+                    <ExternalLink size={14} />
+                    <span>{source.title || 'Untitled source'} <span style={{ color: '#64748b' }}>({source.source})</span></span>
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

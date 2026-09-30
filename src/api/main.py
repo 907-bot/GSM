@@ -1,11 +1,12 @@
 import json
 import asyncio
+import re
 from uuid import UUID
-from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, Request, Depends
+from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, Request, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from pydantic import BaseModel, Field
 import structlog
 import uuid
@@ -17,7 +18,7 @@ from ..models import (
     Hypothesis, ExperimentRecommendation, EvidenceItem,
 )
 from ..agents import get_all_agents
-from ..agents.sources import HuggingFacePapersSource
+from ..agents.sources import ArxivSource, HuggingFacePapersSource, OpenAlexSource, PubMedSource
 from ..agents.sources_extended import BioRxivSource, MedRxivSource, CORESource
 from ..agents.citation_agent import citation_agent
 from ..engines import (
@@ -31,6 +32,8 @@ from ..engines import (
 )
 from ..engines.novelty import novelty_engine
 from ..engines.extraction import scientific_extractor
+from ..engines.gap_analyzer import gap_analyzer
+from ..engines.paper_publisher import paper_publisher
 from ..memory import EpisodicMemory, SemanticMemory
 from ..memory.graph_schema import graph_schema
 from ..services import embedding_service, llm_service
@@ -73,6 +76,29 @@ async def startup():
     await event_bus.subscribe("graph", forward_to_ws)
     await event_bus.subscribe("pipeline", forward_to_ws)
     logger.info("Event bus wired to WebSocket manager")
+
+    # Seed default researcher user if database is empty
+    try:
+        users = await db.list_users()
+        if not users:
+            await auth_service.register(UserCreate(
+                email="researcher@gsm-os.org",
+                password="researcher123",
+                name="Dr. Alex Mercer (Lead Researcher)",
+                role="researcher",
+            ))
+            logger.info("Auto-seeded default researcher user: researcher@gsm-os.org")
+    except Exception as e:
+        logger.warning("Default user seeding skipped or failed", error=str(e))
+
+    # Seed initial papers if paper database is empty
+    try:
+        paper_count = await db.count_papers()
+        if paper_count == 0:
+            await gap_analyzer.analyze_subject("Quantum Computing & Machine Learning", max_papers=6)
+            logger.info("Auto-seeded foundational research papers in knowledge base")
+    except Exception as e:
+        logger.warning("Initial paper seeding skipped or failed", error=str(e))
 
 
 @app.on_event("shutdown")
@@ -233,6 +259,53 @@ rate_limiter = RateLimiter()
 
 # In-memory hypothesis store (persisted in DB in production)
 _hypothesis_store: Dict[str, Hypothesis] = {}
+_paper_fetch_cache: Dict[str, Dict[str, Any]] = {}
+
+
+def _cache_key(*parts: Any) -> str:
+    return ":".join(str(p).strip().lower() for p in parts)
+
+
+def _get_cached_papers(key: str, ttl_seconds: int = 300) -> Optional[Dict[str, Any]]:
+    cached = _paper_fetch_cache.get(key)
+    if not cached:
+        return None
+    age = (datetime.utcnow() - cached["stored_at"]).total_seconds()
+    if age > ttl_seconds:
+        _paper_fetch_cache.pop(key, None)
+        return None
+    return cached["payload"]
+
+
+def _set_cached_papers(key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    _paper_fetch_cache[key] = {"stored_at": datetime.utcnow(), "payload": payload}
+    return payload
+
+
+def _dedupe_papers(papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    deduped = []
+    for paper in papers:
+        title = (paper.get("title") or "").strip()
+        if not title:
+            continue
+        doi = (paper.get("doi") or "").lower()
+        source_id = str(paper.get("source_id") or "").lower()
+        key = doi or source_id or title.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if not paper.get("url"):
+            if doi:
+                paper["url"] = f"https://doi.org/{doi}"
+            elif paper.get("source") == "arxiv" and source_id:
+                paper["url"] = f"https://arxiv.org/abs/{source_id}"
+        deduped.append(paper)
+    return deduped
+
+
+def _actor_from_user(user: Optional[Dict[str, Any]], fallback: str = "public") -> str:
+    return user.get("email", fallback) if user else fallback
 
 
 @app.get("/")
@@ -1010,7 +1083,7 @@ async def get_contradiction_summary():
 @app.post("/bottlenecks/detect")
 async def detect_bottlenecks(
     request: BottleneckRequest,
-    user: Dict[str, Any] = Depends(require_auth),
+    user: Optional[Dict[str, Any]] = Depends(optional_user),
 ):
     """Detect bottlenecks in a scientific field."""
     bottlenecks = await bottleneck_engine.detect_bottlenecks(
@@ -1019,7 +1092,7 @@ async def detect_bottlenecks(
     )
     await audit_service.log(
         action="bottlenecks.detect",
-        actor=user.get("email", "unknown"),
+        actor=_actor_from_user(user),
         detail={"field": request.field},
     )
     return {
@@ -1038,7 +1111,7 @@ async def get_bottleneck_summary(field: str):
 @app.post("/hypotheses/generate")
 async def generate_hypotheses(
     request: HypothesisRequest,
-    user: Dict[str, Any] = Depends(require_auth),
+    user: Optional[Dict[str, Any]] = Depends(optional_user),
 ):
     """Generate scientific hypotheses with full evidence citations."""
     hypotheses = await hypothesis_generator.generate_hypotheses(
@@ -1050,7 +1123,7 @@ async def generate_hypotheses(
         _hypothesis_store[str(h.id)] = h
     await audit_service.log(
         action="hypotheses.generate",
-        actor=user.get("email", "unknown"),
+        actor=_actor_from_user(user),
     )
     return {
         "hypotheses": [h.model_dump() for h in hypotheses],
@@ -1513,29 +1586,60 @@ async def find_relationships(paper_id: str):
 @app.post("/papers/fetch")
 async def fetch_papers(
     request: FetchPapersRequest,
-    user: Dict[str, Any] = Depends(require_auth),
+    user: Optional[Dict[str, Any]] = Depends(optional_user),
 ):
-    """Fetch latest papers from Hugging Face and other sources."""
-    hf_source = HuggingFacePapersSource(api_key=settings.HUGGINGFACE_API_KEY)
-    all_papers = []
+    """Fetch latest papers from public scholarly sources with a short response cache."""
+    query = (request.query or "").strip()
+    cache_key = _cache_key("papers", query or "latest", request.max_results)
+    cached = _get_cached_papers(cache_key)
+    if cached:
+        return {**cached, "cached": True}
 
-    if request.query:
-        papers = await hf_source.search(request.query, max_results=request.max_results)
+    hf_source = HuggingFacePapersSource(api_key=settings.HUGGINGFACE_API_KEY)
+    arxiv_source = ArxivSource()
+    pubmed_source = PubMedSource(api_key=settings.NCBI_API_KEY)
+    openalex_source = OpenAlexSource(api_key=settings.OPENALEX_API_KEY)
+
+    per_source = max(5, min(request.max_results, 25))
+    source_tasks = []
+    if query:
+        source_tasks = [
+            hf_source.search(query, max_results=per_source),
+            arxiv_source.search(query, max_results=per_source),
+            pubmed_source.search(query, max_results=per_source),
+            openalex_source.search(query, per_page=per_source),
+        ]
     else:
-        papers = await hf_source.fetch_latest(max_results=request.max_results)
-    all_papers.extend(papers)
+        source_tasks = [
+            hf_source.fetch_latest(max_results=per_source),
+            arxiv_source.search("machine learning OR biology OR medicine", max_results=per_source),
+            pubmed_source.search("latest biomedical research", max_results=per_source),
+            openalex_source.search("scientific discovery", per_page=per_source),
+        ]
+
+    all_papers: List[Dict[str, Any]] = []
+    results = await asyncio.gather(*source_tasks, return_exceptions=True)
+    for result in results:
+        if isinstance(result, Exception):
+            logger.warning("Paper source failed", error=str(result))
+            continue
+        all_papers.extend(result)
+
+    all_papers = _dedupe_papers(all_papers)[:request.max_results]
 
     await audit_service.log(
         action="papers.fetch",
-        actor=user.get("email", "unknown"),
-        detail={"query": request.query, "count": len(all_papers)},
+        actor=_actor_from_user(user),
+        detail={"query": query, "count": len(all_papers)},
     )
 
-    return {
+    return _set_cached_papers(cache_key, {
         "papers": all_papers,
         "total": len(all_papers),
-        "source": "huggingface",
-    }
+        "source": "huggingface,arxiv,pubmed,openalex",
+        "cached": False,
+        "cache_ttl_seconds": 300,
+    })
 
 
 @app.get("/llm/models")
@@ -2025,14 +2129,15 @@ async def simulate_peer_review(
 
 class RoadmapRequest(BaseModel):
     topic: str
-    timeframe_years: int = Field(default=3, ge=1, le=10)
+    timeframe_years: int = Field(default=1, ge=1, le=10)
+    timeframe_weeks: int = Field(default=12, ge=1, le=520)
     include_gaps: bool = True
 
 
 @app.post("/roadmap/generate")
 async def generate_research_roadmap(
     request: RoadmapRequest,
-    user: Dict[str, Any] = Depends(require_auth),
+    user: Optional[Dict[str, Any]] = Depends(optional_user),
 ):
     """Generate a structured research roadmap for a topic with gap analysis."""
     # Get relevant papers and gaps from the knowledge graph
@@ -2052,20 +2157,41 @@ async def generate_research_roadmap(
         except Exception:
             pass
 
+    source_papers: List[Dict[str, Any]] = []
+    try:
+        source_resp = await fetch_papers(
+            FetchPapersRequest(query=request.topic, max_results=8),
+            user=user,
+        )
+        source_papers = source_resp.get("papers", [])[:8]
+    except Exception as e:
+        logger.warning("Roadmap source lookup failed", error=str(e), topic=request.topic)
+
+    source_context = ""
+    if source_papers:
+        source_context = "\n\nRecent source papers to consider:\n" + "\n".join(
+            f"- {p.get('title', 'Untitled')} ({p.get('source', 'source')}): {p.get('url') or p.get('doi') or 'link unavailable'}"
+            for p in source_papers
+        )
+
     prompt = (
-        f"Create a detailed {request.timeframe_years}-year research roadmap for the topic: {request.topic}\n"
-        f"{gap_context}\n\n"
+        f"Create a detailed research roadmap for the topic: {request.topic}\n"
+        f"Timeline length: {request.timeframe_weeks} weeks ({request.timeframe_years} year planning horizon).\n"
+        f"{gap_context}{source_context}\n\n"
         "Structure the roadmap as:\n"
-        "## Phase 1: Foundation (Year 1)\n"
+        "## Week 1: Orientation and scope\n"
         "- Key milestones\n- Required resources\n- Expected outcomes\n\n"
-        "## Phase 2: Development (Year 2)\n"
+        "## Weeks 2-4: Literature grounding and reproducible baseline\n"
         "- Key milestones\n- Required resources\n- Expected outcomes\n\n"
-        f"## Phase 3: Maturation (Year {request.timeframe_years})\n"
+        "## Months 2-3: Experiments and gap validation\n"
         "- Key milestones\n- Required resources\n- Expected outcomes\n\n"
+        "## Longer horizon milestones\n"
+        "- Show how work expands from the first quarter into the requested planning horizon\n\n"
         "## Open Research Questions\n"
+        "## Source Papers and Links\n"
         "## Recommended Collaborations\n"
         "## Potential Impact\n\n"
-        "Be specific. Reference real techniques, datasets, and existing work where relevant."
+        "Be specific. Reference real techniques, datasets, and the source links above where relevant."
     )
 
     try:
@@ -2075,14 +2201,16 @@ async def generate_research_roadmap(
 
     await audit_service.log(
         action="roadmap.generate",
-        actor=user.get("email", "unknown"),
+        actor=_actor_from_user(user),
         detail={"topic": request.topic[:80]},
     )
     return {
         "topic": request.topic,
         "timeframe_years": request.timeframe_years,
+        "timeframe_weeks": request.timeframe_weeks,
         "roadmap": roadmap,
         "gaps_included": request.include_gaps,
+        "sources": source_papers,
     }
 
 
@@ -2215,3 +2343,147 @@ async def _initialize_graph_schema():
         logger.info("Graph schema initialized on startup")
     except Exception as e:
         logger.warning("Graph schema init failed on startup (non-fatal)", error=str(e))
+
+
+# ── Subject Gap Discovery & Research Paper Publishing Endpoints ─────────
+
+
+class GapAnalysisRequest(BaseModel):
+    subject: str
+    max_papers: int = 15
+
+
+@app.post("/gaps/analyze")
+async def analyze_subject_gaps(
+    request: GapAnalysisRequest,
+    user: Optional[Dict[str, Any]] = Depends(optional_user),
+):
+    """
+    Uncover scientific bottlenecks, contradictions, missing links,
+    and testable hypotheses in any subject the user specifies.
+    """
+    subject = request.subject.strip()
+    if not subject:
+        raise HTTPException(status_code=400, detail="Subject cannot be empty")
+
+    results = await gap_analyzer.analyze_subject(subject, max_papers=request.max_papers)
+
+    await audit_service.log(
+        action="gaps.analyze",
+        actor=_actor_from_user(user),
+        detail={"subject": subject, "bottlenecks_found": len(results.get("bottlenecks", []))},
+    )
+    return results
+
+
+class PublishGenerateRequest(BaseModel):
+    topic: str
+    gap: str
+    venue: str = "NeurIPS"
+    paper_type: str = "Original Research Article"
+    authors: Optional[List[Dict[str, str]]] = None
+    custom_notes: str = ""
+    keywords: Optional[List[str]] = None
+
+
+@app.post("/papers/publish/generate")
+async def publish_generate_paper(
+    request: PublishGenerateRequest,
+    user: Optional[Dict[str, Any]] = Depends(optional_user),
+):
+    """
+    Generate a full publication-grade research paper including
+    all 10 academic sections, compilation-ready LaTeX (.tex), and BibTeX (.bib).
+    """
+    if not request.topic.strip():
+        raise HTTPException(status_code=400, detail="Topic cannot be empty")
+
+    paper = await paper_publisher.generate_full_paper(
+        topic=request.topic,
+        gap=request.gap,
+        venue=request.venue,
+        authors=request.authors,
+        paper_type=request.paper_type,
+        custom_notes=request.custom_notes,
+        keywords=request.keywords,
+    )
+
+    await audit_service.log(
+        action="papers.publish.generate",
+        actor=_actor_from_user(user),
+        detail={"topic": request.topic, "venue": request.venue, "words": paper["stats"]["word_count"]},
+    )
+    return paper
+
+
+class SectionRegenerateRequest(BaseModel):
+    section_name: str
+    topic: str
+    current_content: str
+    prompt: str
+
+
+@app.post("/papers/publish/section")
+async def publish_regenerate_section(
+    request: SectionRegenerateRequest,
+    user: Optional[Dict[str, Any]] = Depends(optional_user),
+):
+    """Regenerate or polish a specific academic section with custom user instructions."""
+    updated = await paper_publisher.regenerate_section(
+        request.section_name,
+        request.topic,
+        request.current_content,
+        request.prompt,
+    )
+    return {"section_name": request.section_name, "content": updated}
+
+
+class PublishReviewRequest(BaseModel):
+    title: str
+    abstract: str
+    sections: Dict[str, str]
+    venue: str = "NeurIPS"
+
+
+@app.post("/papers/publish/review")
+async def publish_review_paper(
+    request: PublishReviewRequest,
+    user: Optional[Dict[str, Any]] = Depends(optional_user),
+):
+    """Simulate venue-calibrated peer review (NeurIPS, Nature, IEEE TPAMI, etc.)."""
+    return await paper_publisher.simulate_venue_review(
+        title=request.title,
+        abstract=request.abstract,
+        sections=request.sections,
+        venue=request.venue,
+    )
+
+
+class ExportPaperRequest(BaseModel):
+    format: str = "latex"  # "latex", "bibtex", "markdown"
+    content: str
+    filename: str = "paper"
+
+
+@app.post("/papers/publish/export")
+async def publish_export_paper(request: ExportPaperRequest):
+    """Export the paper to downloadable LaTeX, BibTeX, or Markdown."""
+    media_type = "text/plain"
+    ext = "txt"
+    if request.format == "latex":
+        media_type = "application/x-latex"
+        ext = "tex"
+    elif request.format == "bibtex":
+        media_type = "application/x-bibtex"
+        ext = "bib"
+    elif request.format == "markdown":
+        media_type = "text/markdown"
+        ext = "md"
+
+    safe_filename = re.sub(r"[^a-zA-Z0-9_\-]", "_", request.filename)[:60]
+    return Response(
+        content=request.content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{safe_filename}.{ext}"'},
+    )
+

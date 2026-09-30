@@ -83,10 +83,21 @@ export function GraphExplorer() {
   const events = useEventStore((s) => s.events['graph'] || [])
 
   // Build graph from real papers in memory
-  const buildGraphFromPapers = useCallback(async () => {
+  const buildGraphFromPapers = useCallback(async (topic = '') => {
     setLoadingPapers(true)
     try {
-      const { data: papers } = await api.listPapers(1, 200)
+      let papers: any[] = []
+      if (topic.trim()) {
+        const fetched = await api.fetchLatestPapers(topic.trim(), 50)
+        papers = fetched.papers || []
+      } else {
+        const memory = await api.listPapers(1, 200)
+        papers = memory.data || []
+        if (!papers.length) {
+          const fetched = await api.fetchLatestPapers('', 50)
+          papers = fetched.papers || []
+        }
+      }
       if (!papers?.length) return
 
       // Map paper categories to major groups and subcategories
@@ -103,42 +114,34 @@ export function GraphExplorer() {
       const majorCounts: Record<string, number> = {}
       const subPapers: Record<string, string[]> = {}
       for (const p of papers) {
-        const cats = (p.payload?.categories || []).map((c: string) => c.toLowerCase())
+        const payload = p.payload || p
+        const cats = (payload.categories || []).map((c: string) => String(c).toLowerCase()).filter(Boolean)
         let assigned = false
         for (const cat of cats) {
-          const mapped = catMap[cat]
+          const mapped = catMap[cat] || Object.entries(catMap).find(([key]) => cat.includes(key) || key.includes(cat))?.[1]
           if (mapped) {
             majorCounts[mapped.major] = (majorCounts[mapped.major] || 0) + 1
             if (!subPapers[mapped.sub]) subPapers[mapped.sub] = []
-            subPapers[mapped.sub].push(p.payload?.title || '')
+            subPapers[mapped.sub].push(payload.title || '')
             assigned = true
             break
           }
         }
         if (!assigned) {
           majorCounts['others'] = (majorCounts['others'] || 0) + 1
-          const otherSub = cats[0] || 'general'
+          const otherSub = cats[0] || payload.source || 'general'
           if (!subPapers[otherSub]) subPapers[otherSub] = []
-          subPapers[otherSub].push(p.payload?.title || '')
+          subPapers[otherSub].push(payload.title || '')
         }
       }
 
-      // Ensure all major groups have at least 1 count if no papers matched
-      for (const major of MAJOR_CATEGORIES) {
-        if (!majorCounts[major]) majorCounts[major] = 1
-        for (const sub of MAJOR_GROUPS[major].subcategories) {
-          if (!subPapers[sub]) subPapers[sub] = []
-        }
-      }
-
-      // Build nodes: major nodes + subcategory nodes
+      // Build nodes only from real paper/category evidence.
       const nodes: GraphNode[] = []
       const links: GraphLink[] = []
-      for (const major of MAJOR_CATEGORIES) {
+      for (const major of MAJOR_CATEGORIES.filter(m => majorCounts[m] > 0)) {
         const info = MAJOR_GROUPS[major]
-        const count = majorCounts[major] || 1
+        const count = majorCounts[major] || 0
 
-        // Major group node
         const majorId = `group:${major}`
         nodes.push({
           id: majorId,
@@ -147,36 +150,22 @@ export function GraphExplorer() {
           isMajor: true,
         })
 
-        // Subcategory nodes
-        for (const sub of info.subcategories) {
+        const realSubcategories = Object.keys(subPapers).filter(sub => info.subcategories.includes(sub) || major === 'others')
+        for (const sub of realSubcategories) {
           const subId = `sub:${major}:${sub}`
           const paperTitles = subPapers[sub] || []
-          const hasPapers = paperTitles.length > 0
           nodes.push({
             id: subId,
             group: major,
             subcategory: sub,
-            val: hasPapers ? Math.max(4, paperTitles.length * 1.5) : 3,
+            val: Math.max(4, paperTitles.length * 1.5),
           })
 
-          // Link subcategory to its major group
           links.push({ source: majorId, target: subId, label: 'belongs_to' })
-
-          // Link related subcategories within same major group
-          for (const otherSub of info.subcategories) {
-            if (otherSub < sub) {
-              links.push({
-                source: subId,
-                target: `sub:${major}:${otherSub}`,
-                label: 'related',
-              })
-            }
-          }
         }
 
-        // Cross-connect major groups if they share subcategory topics
         for (const otherMajor of MAJOR_CATEGORIES) {
-          if (otherMajor > major) {
+          if (otherMajor > major && majorCounts[otherMajor] > 0) {
             links.push({
               source: majorId,
               target: `group:${otherMajor}`,
@@ -404,6 +393,7 @@ export function GraphExplorer() {
     if (!concept.trim()) return
     setLoading(true)
     try {
+      await buildGraphFromPapers(concept)
       const data = await api.visualizeGraph(concept, 2)
       if (data?.nodes?.length > 0) {
         const nodes: GraphNode[] = data.nodes.map((n: any) => ({
@@ -435,7 +425,7 @@ export function GraphExplorer() {
           <p className="text-slate-400 mt-1">Knowledge graph organized by major domains with sub-categories</p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={buildGraphFromPapers} disabled={loadingPapers}
+          <button onClick={() => buildGraphFromPapers()} disabled={loadingPapers}
             className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-blue-400 hover:text-blue-300 border border-blue-500/30 transition-colors disabled:opacity-50">
             {loadingPapers ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCw className="h-3 w-3" />}
             Rebuild from Papers

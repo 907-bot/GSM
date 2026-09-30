@@ -171,6 +171,30 @@ export function AuthScreen() {
               </>
             )}
           </button>
+
+          {/* Quick Demo Access Button */}
+          <div className="pt-2">
+            <button
+              type="button"
+              disabled={loading}
+              onClick={async () => {
+                setValidationError(null)
+                try {
+                  await login('researcher@gsm-os.org', 'researcher123')
+                } catch {
+                  try {
+                    await register('Dr. Alex Mercer', 'researcher@gsm-os.org', 'researcher123', 'researcher')
+                  } catch (e: any) {
+                    setValidationError(e.message || 'Quick access failed')
+                  }
+                }
+              }}
+              className="w-full py-2.5 rounded-lg bg-white/5 hover:bg-white/10 border border-indigo-500/30 text-indigo-300 hover:text-white font-medium text-xs transition-all duration-200 flex items-center justify-center gap-2 shadow-inner"
+            >
+              <Sparkles className="h-3.5 w-3.5 text-indigo-400 animate-pulse" />
+              <span>Quick Explore (1-Click Demo Researcher Access)</span>
+            </button>
+          </div>
         </form>
 
         {/* Info footer */}

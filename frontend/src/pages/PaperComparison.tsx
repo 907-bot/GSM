@@ -1,10 +1,13 @@
-import React, { useState } from 'react'
+import React, { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { GripVertical, Plus, X } from 'lucide-react'
+import { api } from '../api'
 
 interface PaperInfo {
   id: string
   title: string
   source: string
+  authors?: string[]
 }
 
 interface ComparisonResult {
@@ -17,28 +20,71 @@ interface ComparisonResult {
   comparison_summary: string
 }
 
-export function PaperComparison() {
-  const [paperIdA, setPaperIdA] = useState('')
-  const [paperIdB, setPaperIdB] = useState('')
-  const [triggerQuery, setTriggerQuery] = useState(false)
+function normalizePaper(paper: any): PaperInfo {
+  const payload = paper.payload || paper
+  return {
+    id: paper.id || payload.id || payload.source_id,
+    title: payload.title || 'Untitled paper',
+    source: payload.source || 'Memory',
+    authors: payload.authors || [],
+  }
+}
 
-  const { data, isLoading, error, refetch } = useQuery<ComparisonResult>({
-    queryKey: ['compare-papers', paperIdA, paperIdB],
+export function PaperComparison() {
+  const [selected, setSelected] = useState<PaperInfo[]>([])
+  const [query, setQuery] = useState('')
+
+  const papersQuery = useQuery({
+    queryKey: ['comparison-papers'],
     queryFn: async () => {
-      const response = await fetch(`/api/papers/compare?paper_id_a=${encodeURIComponent(paperIdA)}&paper_id_b=${encodeURIComponent(paperIdB)}`)
-      if (!response.ok) {
-        throw new Error('Comparison failed. Make sure both paper IDs are correct.')
-      }
-      return response.json()
+      const { data } = await api.listPapers(1, 100)
+      return (data || []).map(normalizePaper).filter((paper: PaperInfo) => paper.id)
     },
-    enabled: triggerQuery && !!paperIdA && !!paperIdB,
   })
 
-  const handleCompare = (e: React.FormEvent) => {
+  const pairKeys = useMemo(() => {
+    const pairs: Array<[PaperInfo, PaperInfo]> = []
+    for (let i = 0; i < selected.length; i += 1) {
+      for (let j = i + 1; j < selected.length; j += 1) {
+        pairs.push([selected[i], selected[j]])
+      }
+    }
+    return pairs
+  }, [selected])
+
+  const comparisonQuery = useQuery<ComparisonResult[]>({
+    queryKey: ['compare-paper-set', selected.map(p => p.id).join('|')],
+    queryFn: async () => Promise.all(pairKeys.map(([a, b]) => api.comparePapers(a.id, b.id))),
+    enabled: selected.length >= 2,
+  })
+
+  const filteredPapers = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    const available = (papersQuery.data || []).filter((paper: PaperInfo) => !selected.some(p => p.id === paper.id))
+    if (!q) return available.slice(0, 20)
+    return available.filter((paper: PaperInfo) => {
+      return paper.title.toLowerCase().includes(q)
+        || paper.source.toLowerCase().includes(q)
+        || (paper.authors || []).join(' ').toLowerCase().includes(q)
+    }).slice(0, 20)
+  }, [papersQuery.data, query, selected])
+
+  const addPaper = (paper: PaperInfo) => {
+    setSelected(prev => prev.some(p => p.id === paper.id) ? prev : [...prev, paper].slice(0, 6))
+  }
+
+  const removePaper = (id: string) => {
+    setSelected(prev => prev.filter(p => p.id !== id))
+  }
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault()
-    if (paperIdA && paperIdB) {
-      setTriggerQuery(true)
-      refetch()
+    const raw = e.dataTransfer.getData('application/x-gsm-paper')
+    if (!raw) return
+    try {
+      addPaper(JSON.parse(raw))
+    } catch {
+      // ignore malformed drag data
     }
   }
 
@@ -49,143 +95,107 @@ export function PaperComparison() {
           Paper Comparison View
         </h1>
         <p style={{ margin: 0, color: '#64748b', fontSize: 15 }}>
-          Compare two papers side-by-side to discover shared authors, overlapping concepts, semantic similarities, or contradictions.
+          Select papers by name or drag them into the comparison tray to compare two or more studies.
         </p>
       </div>
 
-      <form onSubmit={handleCompare} style={{
-        display: 'flex', gap: 16, marginBottom: 32, alignItems: 'flex-end',
-        background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)',
-        padding: 20, borderRadius: 12
-      }}>
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <label style={{ fontSize: 13, color: '#94a3b8' }}>First Paper ID / UUID:</label>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 380px) 1fr', gap: 24 }}>
+        <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)', padding: 20, borderRadius: 12 }}>
+          <label style={{ fontSize: 13, color: '#94a3b8' }}>Find papers by title, author, or source</label>
           <input
             type="text"
-            value={paperIdA}
-            onChange={e => setPaperIdA(e.target.value)}
-            placeholder="e.g. 550e8400-e29b-41d4-a716-446655440000"
-            required
-            style={{
-              padding: '10px 14px', borderRadius: 8,
-              background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
-              color: '#e2e8f0', fontSize: 14, outline: 'none'
-            }}
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Search stored papers"
+            style={{ width: '100%', marginTop: 8, marginBottom: 16, padding: '10px 14px', borderRadius: 8, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#e2e8f0', fontSize: 14, outline: 'none' }}
           />
-        </div>
 
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <label style={{ fontSize: 13, color: '#94a3b8' }}>Second Paper ID / UUID:</label>
-          <input
-            type="text"
-            value={paperIdB}
-            onChange={e => setPaperIdB(e.target.value)}
-            placeholder="e.g. 770e8400-e29b-41d4-a716-446655440000"
-            required
-            style={{
-              padding: '10px 14px', borderRadius: 8,
-              background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
-              color: '#e2e8f0', fontSize: 14, outline: 'none'
-            }}
-          />
-        </div>
-
-        <button
-          type="submit"
-          style={{
-            padding: '10px 24px', background: 'linear-gradient(135deg, #6366f1, #a855f7)',
-            border: 'none', borderRadius: 8, color: '#ffffff', fontSize: 14, fontWeight: 600,
-            cursor: 'pointer', height: 42
-          }}
-        >
-          Compare
-        </button>
-      </form>
-
-      {isLoading && <div style={{ textAlign: 'center', padding: 40, color: '#94a3b8' }}>Comparing papers using LLM semantic analyzer...</div>}
-
-      {error && (
-        <div style={{ padding: '16px 20px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, color: '#fca5a5', marginBottom: 24 }}>
-          {(error as Error).message}
-        </div>
-      )}
-
-      {data && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
-          {/* Paper A & B Header Card */}
-          <div style={{
-            gridColumn: '1 / -1', display: 'flex', gap: 24,
-            background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)',
-            padding: 24, borderRadius: 16
-          }}>
-            <div style={{ flex: 1 }}>
-              <span style={{ fontSize: 11, color: '#6366f1', fontWeight: 700 }}>PAPER A ({data.paper_a.source})</span>
-              <h3 style={{ margin: '4px 0 0', fontSize: 16, color: '#f1f5f9' }}>{data.paper_a.title}</h3>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '0 20px', borderLeft: '1px solid rgba(255,255,255,0.08)', borderRight: '1px solid rgba(255,255,255,0.08)' }}>
-              <span style={{ fontSize: 11, color: '#64748b' }}>Similarity</span>
-              <span style={{ fontSize: 24, fontWeight: 800, color: '#10b981' }}>{(data.semantic_similarity * 100).toFixed(0)}%</span>
-              <span style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>{data.similarity_verdict}</span>
-            </div>
-            <div style={{ flex: 1 }}>
-              <span style={{ fontSize: 11, color: '#a855f7', fontWeight: 700 }}>PAPER B ({data.paper_b.source})</span>
-              <h3 style={{ margin: '4px 0 0', fontSize: 16, color: '#f1f5f9' }}>{data.paper_b.title}</h3>
-            </div>
-          </div>
-
-          {/* AI Comparison Summary */}
-          <div style={{
-            gridColumn: '1 / -1', background: 'rgba(99,102,241,0.05)', border: '1px solid rgba(99,102,241,0.15)',
-            padding: 24, borderRadius: 16
-          }}>
-            <h4 style={{ margin: '0 0 10px', fontSize: 13, color: '#a5b4fc', fontWeight: 700, letterSpacing: '0.05em' }}>🧠 AI COMPARISON SUMMARY</h4>
-            <p style={{ margin: 0, fontSize: 14, color: '#e2e8f0', lineHeight: 1.6 }}>{data.comparison_summary || 'No comparison text generated.'}</p>
-          </div>
-
-          {/* Overlapping concepts & Shared authors */}
-          <div style={{
-            background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)',
-            padding: 24, borderRadius: 16
-          }}>
-            <h4 style={{ margin: '0 0 16px', fontSize: 14, color: '#f1f5f9' }}>🧬 Shared Concepts & Categories</h4>
-            {data.shared_concepts.length > 0 ? (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                {data.shared_concepts.map(concept => (
-                  <span key={concept} style={{
-                    padding: '4px 10px', background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.25)',
-                    borderRadius: 12, color: '#a5b4fc', fontSize: 12
-                  }}>
-                    {concept}
-                  </span>
-                ))}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 520, overflowY: 'auto' }}>
+            {papersQuery.isLoading && <p style={{ color: '#64748b', fontSize: 13 }}>Loading papers...</p>}
+            {filteredPapers.map((paper: PaperInfo) => (
+              <div
+                key={paper.id}
+                draggable
+                onDragStart={e => {
+                  e.dataTransfer.setData('application/x-gsm-paper', JSON.stringify(paper))
+                  e.dataTransfer.setData('text/plain', paper.title)
+                  e.dataTransfer.effectAllowed = 'copy'
+                }}
+                style={{ border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, padding: 12, background: 'rgba(255,255,255,0.03)', cursor: 'grab' }}
+              >
+                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                  <GripVertical size={16} color="#64748b" style={{ flexShrink: 0, marginTop: 2 }} />
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ color: '#f1f5f9', fontSize: 13, fontWeight: 700, lineHeight: 1.35 }}>{paper.title}</div>
+                    <div style={{ color: '#64748b', fontSize: 11, marginTop: 4 }}>{paper.source}{paper.authors?.length ? ` · ${paper.authors.slice(0, 2).join(', ')}` : ''}</div>
+                  </div>
+                  <button type="button" onClick={() => addPaper(paper)} style={{ border: '1px solid rgba(99,102,241,0.35)', background: 'rgba(99,102,241,0.16)', color: '#a5b4fc', borderRadius: 8, padding: 6, cursor: 'pointer' }}>
+                    <Plus size={14} />
+                  </button>
+                </div>
               </div>
-            ) : (
-              <p style={{ margin: 0, fontSize: 13, color: '#64748b' }}>No shared category tags found.</p>
-            )}
-          </div>
-
-          <div style={{
-            background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)',
-            padding: 24, borderRadius: 16
-          }}>
-            <h4 style={{ margin: '0 0 16px', fontSize: 14, color: '#f1f5f9' }}>👥 Shared Authors</h4>
-            {data.shared_authors.length > 0 ? (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                {data.shared_authors.map(author => (
-                  <span key={author} style={{
-                    padding: '4px 10px', background: 'rgba(168,85,247,0.15)', border: '1px solid rgba(168,85,247,0.25)',
-                    borderRadius: 12, color: '#d8b4fe', fontSize: 12
-                  }}>
-                    {author}
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <p style={{ margin: 0, fontSize: 13, color: '#64748b' }}>No common authors between these papers.</p>
+            ))}
+            {!papersQuery.isLoading && filteredPapers.length === 0 && (
+              <p style={{ color: '#64748b', fontSize: 13 }}>No matching stored papers. Fetch papers from Discovery Feed first.</p>
             )}
           </div>
         </div>
-      )}
+
+        <div>
+          <div
+            onDragOver={e => e.preventDefault()}
+            onDrop={handleDrop}
+            style={{ minHeight: 130, marginBottom: 24, border: '1px dashed rgba(99,102,241,0.45)', borderRadius: 12, padding: 16, background: 'rgba(99,102,241,0.05)' }}
+          >
+            <div style={{ fontSize: 13, color: '#a5b4fc', fontWeight: 700, marginBottom: 12 }}>Comparison tray</div>
+            {selected.length === 0 ? (
+              <p style={{ margin: 0, color: '#64748b', fontSize: 14 }}>Drop papers here or add them from the list.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {selected.map((paper, index) => (
+                  <div key={paper.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, borderRadius: 10, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                    <span style={{ color: '#94a3b8', fontSize: 12, width: 22 }}>{index + 1}</span>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ color: '#f8fafc', fontSize: 14, fontWeight: 700 }}>{paper.title}</div>
+                      <div style={{ color: '#64748b', fontSize: 11 }}>{paper.source}{paper.authors?.length ? ` · ${paper.authors.slice(0, 3).join(', ')}` : ''}</div>
+                    </div>
+                    <button type="button" onClick={() => removePaper(paper.id)} style={{ border: 'none', background: 'rgba(239,68,68,0.15)', color: '#fca5a5', borderRadius: 8, padding: 6, cursor: 'pointer' }}>
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {comparisonQuery.isLoading && <div style={{ textAlign: 'center', padding: 40, color: '#94a3b8' }}>Comparing selected papers...</div>}
+          {comparisonQuery.error && (
+            <div style={{ padding: '16px 20px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, color: '#fca5a5', marginBottom: 24 }}>
+              {(comparisonQuery.error as Error).message}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {(comparisonQuery.data || []).map((data, i) => (
+              <div key={`${data.paper_a.id}-${data.paper_b.id}-${i}`} style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', padding: 20, borderRadius: 16 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 16, alignItems: 'center', marginBottom: 16 }}>
+                  <h3 style={{ margin: 0, fontSize: 15, color: '#f1f5f9' }}>{data.paper_a.title}</h3>
+                  <div style={{ textAlign: 'center', minWidth: 90 }}>
+                    <div style={{ fontSize: 22, fontWeight: 800, color: '#10b981' }}>{(data.semantic_similarity * 100).toFixed(0)}%</div>
+                    <div style={{ fontSize: 11, color: '#94a3b8' }}>{data.similarity_verdict}</div>
+                  </div>
+                  <h3 style={{ margin: 0, fontSize: 15, color: '#f1f5f9' }}>{data.paper_b.title}</h3>
+                </div>
+                <p style={{ margin: '0 0 14px', fontSize: 14, color: '#e2e8f0', lineHeight: 1.6 }}>{data.comparison_summary || 'No comparison text generated.'}</p>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', color: '#94a3b8', fontSize: 12 }}>
+                  <span>Shared concepts: {data.shared_concepts.length ? data.shared_concepts.join(', ') : 'none found'}</span>
+                  <span>Shared authors: {data.shared_authors.length ? data.shared_authors.join(', ') : 'none found'}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

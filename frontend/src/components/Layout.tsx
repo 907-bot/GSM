@@ -1,4 +1,4 @@
-import { ReactNode, useState } from 'react'
+import { ReactNode, useState, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard,
@@ -20,6 +20,7 @@ import {
   Route,
   Clock,
   Sparkles,
+  BookOpen,
   LogOut,
 } from 'lucide-react'
 import { clsx } from 'clsx'
@@ -30,6 +31,8 @@ import { useAuthStore } from '../store/authStore'
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
+  { name: 'Gap Finder', href: '/gaps', icon: Sparkles },
+  { name: 'Paper Publisher', href: '/publish', icon: BookOpen },
   { name: 'AI Chat', href: '/chat', icon: MessageSquare },
   { name: 'Discovery Feed', href: '/discovery', icon: Compass },
   { name: 'Missing Links', href: '/missing-links', icon: GitCompare },
@@ -64,8 +67,10 @@ export function Layout({ children }: LayoutProps) {
     enabled: true,
   })
 
-  // Sync connected state to store
-  setConnected(connected)
+  // Sync connected state to store safely inside useEffect
+  useEffect(() => {
+    setConnected(connected)
+  }, [connected, setConnected])
 
   return (
     <div className="flex h-screen scientific-gradient">

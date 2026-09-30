@@ -28,7 +28,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     window.dispatchEvent(new Event('gsm_auth_unauthorized'))
   }
 
-  if (!res.ok) throw new ApiError(res.status, `API ${res.status}: ${res.statusText}`)
+  if (!res.ok) {
+    const payload = await res.json().catch(() => null)
+    throw new ApiError(res.status, payload?.message || payload?.detail || `API ${res.status}: ${res.statusText}`)
+  }
   return res.json()
 }
 
@@ -60,6 +63,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ query, max_results: maxResults }),
     }),
+
+  comparePapers: (paperIdA: string, paperIdB: string) =>
+    request<any>(`/papers/compare?paper_id_a=${encodeURIComponent(paperIdA)}&paper_id_b=${encodeURIComponent(paperIdB)}`),
 
   // ── Existing ────────────────────────────────────────────────
   health: () => request<{ status: string; services: Record<string, string> }>('/health'),
@@ -116,6 +122,30 @@ export const api = {
       body: JSON.stringify({ num_hypotheses: num }),
     }),
 
+  scoreNovelty: (concepts: string[]) =>
+    request<any>('/novelty/score', {
+      method: 'POST',
+      body: JSON.stringify({ concepts }),
+    }),
+
+  noveltyCombinations: (minConfidence = 0.3, maxResults = 20) =>
+    request<any>(`/novelty/combinations?min_confidence=${minConfidence}&max_results=${maxResults}`),
+
+  drugRepurposing: () => request<any>('/novelty/drug-repurposing'),
+
+  threeHopHypotheses: () => request<any>('/novelty/three-hop-hypotheses'),
+
+  generateRoadmap: (topic: string, timeframeWeeks = 12, includeGaps = true) =>
+    request<any>('/roadmap/generate', {
+      method: 'POST',
+      body: JSON.stringify({
+        topic,
+        timeframe_weeks: timeframeWeeks,
+        timeframe_years: Math.max(1, Math.ceil(timeframeWeeks / 52)),
+        include_gaps: includeGaps,
+      }),
+    }),
+
   discoverPath: (source: string, target: string, md = 5) =>
     request<any>('/graph/discover/path', {
       method: 'POST',
@@ -128,6 +158,109 @@ export const api = {
 
   visualizeGraph: (concept: string, depth = 2) =>
     request<any>(`/graph/visualize/${encodeURIComponent(concept)}?depth=${depth}`),
+
+  // ── Subject Gap Discovery & Paper Publishing ───────────────
+  analyzeGaps: (subject: string, maxPapers = 15) =>
+    request<{
+      subject: string
+      papers_analyzed_count: number
+      papers: any[]
+      key_concepts: string[]
+      bottlenecks: any[]
+      contradictions: any[]
+      missing_links: any[]
+      hypotheses: any[]
+      paper_angles: any[]
+      analyzed_at: string
+    }>('/gaps/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ subject, max_papers: maxPapers }),
+    }),
+
+  generatePublishedPaper: (params: {
+    topic: string
+    gap: string
+    venue?: string
+    paper_type?: string
+    authors?: Array<{ name: string; affiliation: string; email: string }>
+    custom_notes?: string
+    keywords?: string[]
+  }) =>
+    request<{
+      id: string
+      title: string
+      topic: string
+      gap: string
+      venue: string
+      venue_info: any
+      paper_type: string
+      authors: any[]
+      keywords: string[]
+      sections: Record<string, string>
+      bibtex: string
+      latex: string
+      markdown: string
+      stats: { word_count: number; sections_count: number; citations_count: number; generated_at: string }
+    }>('/papers/publish/generate', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    }),
+
+  regeneratePaperSection: (params: {
+    section_name: string
+    topic: string
+    current_content: string
+    prompt: string
+  }) =>
+    request<{ section_name: string; content: string }>('/papers/publish/section', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    }),
+
+  simulatePaperReview: (params: {
+    title: string
+    abstract: string
+    sections: Record<string, string>
+    venue?: string
+  }) =>
+    request<{
+      venue: string
+      reviewer_role: string
+      scores: {
+        novelty: number
+        theoretical_soundness: number
+        empirical_rigor: number
+        clarity_and_presentation: number
+        overall_confidence: number
+      }
+      recommendation: string
+      acceptance_probability: number
+      review_summary: string
+      action_checklist: string[]
+      reviewed_at: string
+    }>('/papers/publish/review', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    }),
+
+  exportPaperFile: async (format: 'latex' | 'bibtex' | 'markdown', content: string, filename: string) => {
+    const res = await fetch('/api/papers/publish/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ format, content, filename }),
+    })
+    if (!res.ok) throw new Error('Export failed')
+    const blob = await res.blob()
+    const ext = format === 'latex' ? 'tex' : format === 'bibtex' ? 'bib' : 'md'
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${filename}.${ext}`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    window.URL.revokeObjectURL(url)
+  },
 }
 
 export type Api = typeof api

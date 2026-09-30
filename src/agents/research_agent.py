@@ -158,6 +158,13 @@ class BaseResearchAgent:
             )
             
             if not accepted:
+                if message.startswith("Merged duplicate") and result:
+                    paper.embedding_id = str(result.get("id", "")) if result else str(paper.id)
+                    paper.status = PaperStatus.INDEXED
+                    await event_bus.agent_event(self.domain, EventType.PAPER_INDEXED,
+                        paper_id=str(paper.id), title=paper.title[:50], concepts=paper.categories)
+                    logger.info("Paper merged with existing record", reason=message)
+                    return paper
                 await event_bus.agent_event(self.domain, EventType.PAPER_FAILED,
                     title=paper.title[:80], error=message)
                 logger.info("Paper rejected by quality pipeline", reason=message)

@@ -2,6 +2,7 @@
 
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+import inspect
 import structlog
 from ..bus import event_bus
 from ..events import EventType
@@ -90,7 +91,10 @@ class HypothesisGenerator:
         )
         if findings:
             return findings
-        papers = await self.episodic.list_papers(limit=30)
+        papers_result = self.episodic.list_papers(limit=30)
+        papers = await papers_result if inspect.isawaitable(papers_result) else papers_result
+        if not isinstance(papers, list):
+            papers = []
         return [
             {
                 "id": p.get("id"),

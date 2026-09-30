@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { api } from '../api'
 
 interface NoveltyScoreResult {
   concepts: string[]
@@ -18,17 +19,7 @@ export function NoveltyDashboard() {
 
   const { data, isLoading, error, refetch } = useQuery<NoveltyScoreResult>({
     queryKey: ['novelty-score', concepts],
-    queryFn: async () => {
-      const response = await fetch('/api/novelty/score', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ concepts }),
-      })
-      if (!response.ok) {
-        throw new Error('Novelty score request failed.')
-      }
-      return response.json()
-    },
+    queryFn: () => api.scoreNovelty(concepts),
     enabled: trigger && concepts.length > 0,
   })
 
@@ -40,8 +31,30 @@ export function NoveltyDashboard() {
     }
   }
 
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    const raw = e.dataTransfer.getData('application/x-gsm-missing-link')
+    const text = e.dataTransfer.getData('text/plain')
+    try {
+      const payload = raw ? JSON.parse(raw) : null
+      const droppedConcepts = payload?.concepts?.length ? payload.concepts : text.split('+')
+      const next = droppedConcepts.map((c: string) => c.trim()).filter(Boolean)
+      if (next.length > 0) {
+        setConceptsStr(next.join(', '))
+        setTrigger(true)
+        setTimeout(() => refetch(), 0)
+      }
+    } catch {
+      if (text.trim()) setConceptsStr(text.split('+').map(c => c.trim()).join(', '))
+    }
+  }
+
   return (
-    <div style={{ padding: '24px 32px', maxWidth: 1000, margin: '0 auto' }}>
+    <div
+      onDragOver={e => e.preventDefault()}
+      onDrop={handleDrop}
+      style={{ padding: '24px 32px', maxWidth: 1000, margin: '0 auto' }}
+    >
       <div style={{ marginBottom: 32 }}>
         <h1 style={{ margin: '0 0 8px', fontSize: 28, fontWeight: 800, background: 'linear-gradient(135deg, #6366f1, #a855f7)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
           Novelty Score Dashboard
@@ -71,6 +84,7 @@ export function NoveltyDashboard() {
             }}
           />
           <span style={{ fontSize: 11, color: '#64748b' }}>Provide 2 to 5 scientific keywords or node names.</span>
+          <span style={{ fontSize: 11, color: '#64748b' }}>You can also drag a missing link card here from the Missing Links dashboard.</span>
         </div>
 
         <button

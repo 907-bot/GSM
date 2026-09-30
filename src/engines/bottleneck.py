@@ -1,5 +1,6 @@
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+import inspect
 import structlog
 from ..bus import event_bus
 from ..events import EventType
@@ -39,7 +40,10 @@ class BottleneckEngine:
 
         # Get papers matching the field's category keywords
         category_keywords = FIELD_CATEGORY_MAP.get(field, [field.lower()])
-        all_papers = await self.episodic.list_papers(limit=100)
+        all_papers_result = self.episodic.list_papers(limit=100)
+        all_papers = await all_papers_result if inspect.isawaitable(all_papers_result) else all_papers_result
+        if not isinstance(all_papers, list):
+            all_papers = []
         
         # Filter papers by category match
         matched_papers = []
